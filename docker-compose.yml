@@ -1,0 +1,14 @@
+services:
+  ta:
+    build: .
+    container_name: ta-service
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./certs:/app/certs
+      - ./secrets:/app/secrets
+    environment:
+      - FLASK_ENV=production
+      - AWS_SECRET_NAME=cpabe-master-key
+      - AWS_REGION=us-east-1
+    restart: unless-stopped

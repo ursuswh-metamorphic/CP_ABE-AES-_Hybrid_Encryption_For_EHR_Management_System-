@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>EHR CP-ABE</title>
+  <script>
+    const token = localStorage.getItem('token');
+    if (token) window.location.href = 'upload.html';
+    else      window.location.href = 'login.html';
+  </script>
+</head>
+<body></body>
+</html>
