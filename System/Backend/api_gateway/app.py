@@ -35,9 +35,9 @@ if __name__ == "__main__":
     
     try:
         context.load_cert_chain(cert_path, key_path)
-        print("🔒 Starting API Gateway with HTTPS (TLS 1.3)")
+        print("Starting API Gateway with HTTPS (TLS 1.3)")
         app.run(host='0.0.0.0', port=5000, ssl_context=context, debug=True)
     except FileNotFoundError as e:
-        print(f"❌ SSL Certificate not found: {e}")
-        print("🔓 Falling back to HTTP (insecure)")
+        print(f"SSL Certificate not found: {e}")
+        print("Falling back to HTTP (insecure)")
         app.run(host='0.0.0.0', port=5000, debug=True)

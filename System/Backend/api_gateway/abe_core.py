@@ -110,36 +110,15 @@ class ABECore:
             bytes: Dữ liệu gốc nếu giải mã thành công, None nếu thất bại
         '''
         try:
-            print(f"🔍 Starting decrypt...")
-            print(f"   - pk type: {type(pk)}")
-            print(f"   - sk type: {type(sk)}")
-            print(f"   - ciphertext keys: {list(ciphertext.keys())}")
-            
             # Giải mã khóa đối xứng với CP-ABE
-            print("🔍 Calling cpabe.decrypt...")
             sym_key = self.cpabe.decrypt(pk, sk, ciphertext['abe_key'])
             
-            print(f"🔍 CP-ABE decrypt result:")
-            print(f"   - Type: {type(sym_key)}")
-            print(f"   - Value: {sym_key}")
-            print(f"   - Bool evaluation: {bool(sym_key)}")
-            
-            # Kiểm tra kết quả CP-ABE decrypt
-            if sym_key is not False and sym_key is not None:
-                print("✅ CP-ABE decrypt successful, proceeding to symmetric decrypt...")
+            if sym_key:
                 # Giải mã dữ liệu với khóa đối xứng
-                result = self._symmetric_decrypt(sym_key, ciphertext['iv'], ciphertext['data'])
-                print(f"✅ Full decrypt successful: {result}")
-                return result
-            else:
-                print(f"❌ CP-ABE decrypt failed - insufficient privileges")
-                print(f"   - Expected: user attributes should satisfy policy")
-                return None
-                
+                return self._symmetric_decrypt(sym_key, ciphertext['iv'], ciphertext['data'])
+            return None
         except Exception as e:
-            print(f"❌ Decrypt error: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"Decrypt error: {e}")
             return None
         
     def _symmetric_encrypt(self, key, data):
@@ -175,41 +154,33 @@ class ABECore:
     
     def _symmetric_decrypt(self, key, iv, encrypted_data):
         '''
-        Giải mã dữ liệu với khóa đối xứng
-    
+        Mã hóa dữ liệu với một khóa đối xứng (AES)
+        
         Tham số:
-            key: Khóa đối xứng
-            iv (bytes): Vector khởi tạo
-            encrypted_data (bytes): Dữ liệu đã mã hóa
-        
+            key: Khóa đối xứng 
+            data (bytes): Dữ liệu cần mã hóa
+            
         Trả về:
-            bytes: Dữ liệu gốc
+            tuple: (iv, encrypted_data) - vector khởi tạo và dữ liệu đã mã hóa
         '''
-        try:
-            print(f"🔍 Symmetric decrypt:")
-            print(f"   - Key type: {type(key)}")
-            print(f"   - IV length: {len(iv)}")
-            print(f"   - Data length: {len(encrypted_data)}")
+        h = hashlib.sha256()
+        h.update(str(key).encode())
+        aes_key = h.digest()
         
-            # Chuyển khóa CP-ABE thành khóa AES
-            h = hashlib.sha256()
-            h.update(str(key).encode())
-            aes_key = h.digest()
-            print(f"   - AES key generated, length: {len(aes_key)}")
+        # Tạo vector khởi tạo ngẫu nhiên
+        iv = Random.new().read(AES.block_size)
         
-            # Giải mã với AES CTR mode
-            ctr = Counter.new(128, initial_value=int.from_bytes(iv, 'big'))
-            cipher = AES.new(aes_key, AES.MODE_CTR, counter=ctr)
+        # Mã hóa với AES CTR mode
+        ctr = Counter.new(128, initial_value=int.from_bytes(iv, 'big'))
+        cipher = AES.new(aes_key, AES.MODE_CTR, counter=ctr)
         
-            result = cipher.decrypt(encrypted_data)
-            print(f"✅ Symmetric decrypt result: {result}")
-            return result
+        # Đảm bảo dữ liệu là bytes
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+            
+        encrypted_data = cipher.encrypt(data)
         
-        except Exception as e:
-            print(f"❌ Symmetric decrypt error: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
+        return iv, encrypted_data
 
     def save_public_key(self, pk, filename_prefix='keys', directory='.'):
         '''
@@ -280,31 +251,4 @@ class ABECore:
             sk_bytes = pickle.load(f)
             
         return bytesToObject(sk_bytes, self.group)
-
     
-# Hàm tiện ích
-def format_policy(policy_parts, operator='AND'):
-    '''
-    Định dạng danh sách các phần chính sách thành chuỗi chính sách hợp lệ
-    
-    Tham số:
-        policy_parts (list): Danh sách các phần của chính sách
-        operator (str): Toán tử kết hợp ('AND' hoặc 'OR')
-        
-    Trả về:
-        str: Chuỗi chính sách đã định dạng
-    '''
-    if not policy_parts:
-        return ""
-    
-    if len(policy_parts) == 1:
-        return policy_parts[0]
-    
-    formatted_parts = []
-    for part in policy_parts:
-        if ' ' in part and not (part.startswith('(') and part.endswith(')')):
-            formatted_parts.append(f"({part})")
-        else:
-            formatted_parts.append(part)
-            
-    return f" {operator} ".join(formatted_parts)
