@@ -1,4 +1,5 @@
-const API_BASE = 'https://api.your-domain.com';
+// const API_BASE = 'https://api.your-domain.com';
+const API_BASE = 'https://127.0.0.1:5000';
 
 async function request(path, opts = {}) {
   const token = localStorage.getItem('token');
@@ -23,16 +24,16 @@ async function login(email, password) {
   return res;
 }
 
-async function register(data) {
-  return getJson('/api/auth/register', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(data)
-  });
-}
+// async function register(data) {
+//   return getJson('/api/auth/register', {
+//     method:'POST',
+//     headers:{'Content-Type':'application/json'},
+//     body: JSON.stringify(data)
+//   });
+// }
 
 async function keygen(attrs) {
-  const res = await getJson('/api/keygen', {
+  const res = await getJson('/api/keygen/', {
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ attributes: attrs })

@@ -3,9 +3,11 @@ document.getElementById('genBtn').addEventListener('click', async () => {
   alert.classList.add('d-none');
   const attrs = document.getElementById('attrs').value.split(',').map(s=>s.trim());
   try {
-    const { sk } = await keygen(attrs);
+    // const { sk } = await keygen(attrs);
+    const { secret_key } = await keygen(attrs);
     // Base64 → binary
-    const bin = atob(sk).split('').map(c=>c.charCodeAt(0));
+    // const bin = atob(sk).split('').map(c=>c.charCodeAt(0));
+    const bin = atob(secret_key).split('').map(c=>c.charCodeAt(0));
     const blob = new Blob([new Uint8Array(bin)], { type:'application/octet-stream' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

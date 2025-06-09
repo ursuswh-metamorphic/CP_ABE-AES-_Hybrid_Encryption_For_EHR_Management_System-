@@ -8,13 +8,16 @@ from routes.ehr import ehr_bp
 
 def create_app():
     app = Flask(__name__)
+    from flask_cors import CORS
+    CORS(app, resources={r"/api/*": {"origins": "*"}})
+
     app.config.from_object(Config)
 
     db.init_app(app)
     migrate.init_app(app, db)
     jwt.init_app(app)
 
-    #app.register_blueprint(auth_bp)
+    app.register_blueprint(auth_bp)
     app.register_blueprint(keygen_bp)
     app.register_blueprint(ehr_bp)
     return app

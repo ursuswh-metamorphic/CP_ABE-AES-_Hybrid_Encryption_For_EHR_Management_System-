@@ -133,7 +133,7 @@ class ABECore:
             tuple: (iv, encrypted_data) - vector khởi tạo và dữ liệu đã mã hóa
         '''
         # Chuyển khóa CP-ABE thành khóa AES bằng hàm băm
-        h = hashlib.sha256()
+        h = hashlib.sha512()
         h.update(str(key).encode())
         aes_key = h.digest()
         
@@ -163,7 +163,7 @@ class ABECore:
         Trả về:
             tuple: (iv, encrypted_data) - vector khởi tạo và dữ liệu đã mã hóa
         '''
-        h = hashlib.sha256()
+        h = hashlib.sha512()
         h.update(str(key).encode())
         aes_key = h.digest()
         

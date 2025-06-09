@@ -13,7 +13,7 @@ def keygen():
     
     
     try:
-        res = requests.post("http:localhost:5001/keygen",
+        res = requests.post("http://localhost:5001/keygen",
             json={"attributes": attrs},
             timeout=5
         )
