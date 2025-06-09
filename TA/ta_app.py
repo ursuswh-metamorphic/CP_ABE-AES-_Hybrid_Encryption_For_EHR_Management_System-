@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from System.Backend.api_gateway.abe_core import ABECore
+from abe_core import ABECore
 import os, base64, hashlib, pickle
 from utils.secrets_helper import store_secret, retrieve_secret
 from charm.core.engine.util import objectToBytes, bytesToObject
