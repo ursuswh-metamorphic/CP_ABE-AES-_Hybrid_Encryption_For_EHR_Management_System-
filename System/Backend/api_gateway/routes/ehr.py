@@ -213,7 +213,7 @@ def upload():
         with open(file_path, 'wb') as f:
             f.write(encrypted_data)
             
-        '''
+        
         ef = EhrFile(
             record_id=record_id,
             filename=file.filename,
@@ -224,12 +224,12 @@ def upload():
         db.session.add(ef)
         db.session.commit()
         print("✅ Upload completed successfully")
-
+        
         return jsonify({
             "record_id": record_id,
             "message": "File uploaded and encrypted successfully"
         }), 201
-        '''
+
 
     except Exception as e:
         print(f"❌ Upload failed: {e}")
