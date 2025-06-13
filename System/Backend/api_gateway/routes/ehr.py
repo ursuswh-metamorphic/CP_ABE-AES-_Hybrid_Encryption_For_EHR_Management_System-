@@ -1,41 +1,45 @@
 # routes/ehr.py
-
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, request, jsonify, send_file, current_app, Response
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from extensions import db
 from models import EhrFile, User
 import requests, base64, hashlib
-from flask import current_app
 import uuid, io, os
 import sys
 from datetime import datetime
 import json
 import gc
+import boto3
+import traceback
+from botocore.exceptions import ClientError
+
+# AWS S3 config từ biến môi trường
+S3_BUCKET = os.environ.get("S3_BUCKET")
+S3_REGION = os.environ.get("S3_REGION")
+s3_client = boto3.client(
+    "s3",
+    region_name=S3_REGION,
+    aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+)
 
 # Add path để import abe_core từ root project
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..'))
 from System.Backend.api_gateway.abe_core import ABECore
 from charm.core.engine.util import objectToBytes, bytesToObject
-import uuid, io, base64, hashlib, os
 
 ehr_bp = Blueprint('ehr', __name__, url_prefix='/api/ehr')
-
-# Local file storage path
-UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # Initialize ABE Core
 abe = ABECore()
 
-# TA Client - chỉ gọi TA service cho key management
+# --- TAClient Class (Giữ nguyên) ---
 class TAClient:
     @staticmethod
     def keygen(attributes):
-        """Call TA service để tạo secret key"""
         res = requests.post(
             f"{current_app.config['TA_BASE_URL']}/keygen",
             json={"attributes": attributes},
-            headers={"Authorization": f"Bearer {current_app.config['TA_API_TOKEN']}"},
             verify=False
         )
         res.raise_for_status()
@@ -43,10 +47,8 @@ class TAClient:
     
     @staticmethod
     def get_public_key():
-        """Get public key từ TA service"""
         res = requests.get(
             f"{current_app.config['TA_BASE_URL']}/get_public_key",
-            headers={"Authorization": f"Bearer {current_app.config['TA_API_TOKEN']}"},
             verify=False
         )
         res.raise_for_status()
@@ -54,7 +56,6 @@ class TAClient:
 
     @staticmethod
     def store_ctdk(record_id, ctdk):
-        """Store encrypted data key tại TA"""
         sig = hashlib.sha512(ctdk).digest()
         res = requests.post(
             f"{current_app.config['TA_BASE_URL']}/store_ctdk",
@@ -63,284 +64,364 @@ class TAClient:
                 "ctdk": base64.b64encode(ctdk).decode(),
                 "sig": base64.b64encode(sig).decode()
             },
-            headers={"Authorization": f"Bearer {current_app.config['TA_API_TOKEN']}"},
             verify=False
         )
         res.raise_for_status()
 
     @staticmethod
     def get_ctdk(record_id):
-        """Retrieve encrypted data key từ TA"""
         res = requests.get(
             f"{current_app.config['TA_BASE_URL']}/get_ctdk/{record_id}",
-            headers={"Authorization": f"Bearer {current_app.config['TA_API_TOKEN']}"},
             verify=False
         )
         res.raise_for_status()
         data = res.json()
         return base64.b64decode(data['ctdk'])
 
-@ehr_bp.route('/keygen', methods=['POST'])
+# --- S3 HELPER FUNCTIONS (Giữ nguyên) ---
+def upload_to_s3(data: bytes, s3_key: str):
+    """Upload data lên S3. Raise Exception nếu thất bại."""
+    try:
+        current_app.logger.info(f"Uploading to S3: bucket='{S3_BUCKET}', key='{s3_key}'")
+        s3_client.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=data)
+        current_app.logger.info(f"S3 Upload successful for key: {s3_key}")
+    except ClientError as e:
+        current_app.logger.error(f"S3 ClientError on upload for key {s3_key}: {e}")
+        raise RuntimeError(f"S3 upload failed: {e.response['Error']['Message']}")
+    except Exception as e:
+        current_app.logger.error(f"Unknown S3 error on upload for key {s3_key}: {e}")
+        traceback.print_exc()
+        raise RuntimeError(f"An unexpected error occurred during S3 upload: {str(e)}")
+
+def download_from_s3(s3_key: str) -> bytes:
+    """Download data từ S3. Raise Exception nếu thất bại."""
+    try:
+        current_app.logger.info(f"Downloading from S3: bucket='{S3_BUCKET}', key='{s3_key}'")
+        obj = s3_client.get_object(Bucket=S3_BUCKET, Key=s3_key)
+        content = obj["Body"].read()
+        current_app.logger.info(f"S3 Download successful for key: {s3_key}")
+        return content
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchKey':
+            current_app.logger.error(f"S3 NoSuchKey error on download: Key '{s3_key}' not found.")
+            raise FileNotFoundError(f"File with key '{s3_key}' not found in S3.")
+        else:
+            current_app.logger.error(f"S3 ClientError on download for key {s3_key}: {e}")
+            raise RuntimeError(f"S3 download failed: {e.response['Error']['Message']}")
+    except Exception as e:
+        current_app.logger.error(f"Unknown S3 error on download for key {s3_key}: {e}")
+        traceback.print_exc()
+        raise RuntimeError(f"An unexpected error occurred during S3 download: {str(e)}")
+
+
+# --- ROUTES ---
+
+# @ehr_bp.route('/keygen', methods=['POST'])
 #@jwt_required()
-def keygen():
-    """Generate secret key for user based on their attributes"""
-    uid = 1
+# def keygen():
+#     """Generate secret key for user based on their attributes"""
+#     uid = 1
+#     attributes = request.json.get('attributes', [])
+#     if not attributes:
+#         return jsonify({"msg": "Attributes required"}), 400
     
+#     try:
+#         sk_bytes = TAClient.keygen(attributes)
+        
+#         response_data = {
+#             "secret_key": base64.b64encode(sk_bytes).decode(),
+#             "attributes": attributes,
+#             "user_id": uid,
+#             "timestamp": datetime.now().isoformat(),
+#             "message": "SECRET KEY GENERATED - SAVE THIS SECURELY!",
+#             "warning": "⚠️ Server will NOT store this key. If lost, your encrypted files become unrecoverable.",
+#             "instructions": {
+#                 "save_as": f"user_{uid}_secret_key.json",
+#                 "action": "Save this entire JSON response to your local device",
+#                 "backup": "Create multiple copies in secure locations",
+#                 "never_share": "This key grants access to your encrypted data"
+#             }
+#         }
+#         del sk_bytes
+#         gc.collect()
+#         return jsonify(response_data), 200
+        
+#     except Exception as e:
+#         return jsonify({"msg": f"Key generation failed: {str(e)}"}), 500
+# def keygen():
+#     """Generate secret key for user based on their attributes"""
+#     uid = 1
+#     attributes = request.json.get('attributes', [])
+#     if not attributes:
+#         return jsonify({"msg": "Attributes required"}), 400
+    
+#     try:
+#         # TAClient.keygen() đã trả về một chuỗi bytes đã được mã hóa base64 2 LẦN từ TA.
+#         # Chúng ta sẽ không mã hóa nó thêm nữa.
+#         sk_bytes_from_ta = TAClient.keygen(attributes)
+        
+#         # CHỈNH SỬA QUAN TRỌNG:
+#         # Giải mã sk_bytes_from_ta ra thành chuỗi string để lưu vào file JSON.
+#         # KHÔNG base64.b64encode() nó nữa.
+#         secret_key_string_for_user = sk_bytes_from_ta.decode('utf-8')
+
+#         response_data = {
+#             # Sử dụng trực tiếp chuỗi key đã được decode 1 lần từ TA
+#             "secret_key": secret_key_string_for_user,
+#             "attributes": attributes,
+#             "user_id": uid,
+#             "timestamp": datetime.now().isoformat(),
+#             "message": "SECRET KEY GENERATED - SAVE THIS SECURELY!",
+#             "warning": "⚠️ Server will NOT store this key. If lost, your encrypted files become unrecoverable.",
+#             "instructions": {
+#                 "save_as": f"user_{uid}_secret_key.json",
+#                 "action": "Save this entire JSON response to your local device",
+#                 "backup": "Create multiple copies in secure locations",
+#                 "never_share": "This key grants access to your encrypted data"
+#             }
+#         }
+#         # Dọn dẹp memory
+#         del sk_bytes_from_ta
+#         gc.collect()
+#         return jsonify(response_data), 200
+        
+#     except Exception as e:
+        # return jsonify({"msg": f"Key generation failed: {str(e)}"}), 500
+
+@ehr_bp.route('/keygen', methods=['POST'])
+@jwt_required() # <-- Thêm JWT để yêu cầu đăng nhập
+def keygen():
+    """
+    Tạo khóa bí mật cho người dùng dựa trên thuộc tính của họ.
+    Đây là route KeyGen chính và duy nhất của hệ thống.
+    """
+    uid = get_jwt_identity()
+    user = User.query.get_or_404(uid)
+
+    # Chặn nếu người dùng đã tải key trước đó (logic từ keygen.py cũ)
+    if user.downloaded_sk:
+        return jsonify({
+            "msg": "Bạn chỉ được tải Secret Key một lần. Vui lòng liên hệ quản trị viên để được cấp lại."
+        }), 403
+
     attributes = request.json.get('attributes', [])
     if not attributes:
-        return jsonify({"msg": "Attributes required"}), 400
+        return jsonify({"msg": "Trường 'attributes' là bắt buộc"}), 400
     
+    current_app.logger.info(f"User {uid} is generating key with attributes: {attributes}")
+
     try:
-        # Call TA service to generate secret key
-        sk_bytes = TAClient.keygen(attributes)
+        # 1. Gọi TA Service để lấy key đã mã hóa 2 lần
+        sk_bytes_from_ta = TAClient.keygen(attributes)
         
-        return jsonify({
-            "secret_key": base64.b64encode(sk_bytes).decode(),
+        # 2. Decode một lần để có chuỗi Base64 (đã mã hóa 1 lần) để lưu vào file JSON
+        secret_key_string_for_user = sk_bytes_from_ta.decode('utf-8')
+
+        # 3. Chuẩn bị dữ liệu trả về cho người dùng
+        response_data = {
+            "secret_key": secret_key_string_for_user,
             "attributes": attributes,
             "user_id": uid,
             "timestamp": datetime.now().isoformat(),
             "message": "SECRET KEY GENERATED - SAVE THIS SECURELY!",
-            "warning": "⚠️ Server will NOT store this key. If lost, your encrypted files become unrecoverable.",
+            "warning": "⚠️ Server sẽ KHÔNG lưu trữ key này. Nếu làm mất, bạn sẽ không thể phục hồi dữ liệu.",
             "instructions": {
-                "save_as": f"user_{uid}_secret_key.json",
-                "action": "Save this entire JSON response to your local device",
-                "backup": "Create multiple copies in secure locations",
-                "never_share": "This key grants access to your encrypted data"
+                "save_as": f"user_{uid}_sk.json",
+                "action": "Lưu toàn bộ nội dung JSON này vào thiết bị của bạn",
             }
-        }), 200
+        }
         
-        # ✅ THÊM: Clear secret key từ memory
-        del sk_bytes
-        import gc
+        # 4. Đánh dấu người dùng đã tải key và lưu vào DB
+        user.downloaded_sk = True
+        db.session.commit()
+        
+        # 5. Dọn dẹp memory và trả về
+        del sk_bytes_from_ta
         gc.collect()
+        return jsonify(response_data), 200
         
+    except requests.exceptions.RequestException as e:
+        current_app.logger.error(f"TA connection failed for user {uid}: {e}")
+        return jsonify({"msg": "Không thể kết nối đến máy chủ cấp phát khóa (TA)."}), 503
     except Exception as e:
-        return jsonify({"msg": f"Key generation failed: {str(e)}"}), 500
+        db.session.rollback() # Rất quan trọng: rollback lại việc set downloaded_sk nếu có lỗi
+        tb = traceback.format_exc()
+        current_app.logger.error(f"Key generation failed for user {uid}: {tb}")
+        return jsonify({"msg": f"Quá trình tạo khóa thất bại: {str(e)}"}), 500
+
+# @ehr_bp.route('/upload', methods=['POST'])
+# @jwt_required()
+# def upload():
+#     uid = 1
+#     file = request.files.get('file')
+#     policy = request.form.get('policy')
+    
+#     if not file or not policy:
+#         return jsonify({"msg": "file and policy required"}), 400
+    
+#     # === THAY ĐỔI DUY NHẤT VÀ QUAN TRỌNG NHẤT ===
+#     # "Dọn dẹp" chuỗi policy: loại bỏ khoảng trắng thừa xung quanh các toán tử AND/OR
+#     # và đảm bảo các thuộc tính không dính khoảng trắng.
+#     # Ví dụ: "role:Doctor AND  department:Cardiology" -> "role:DoctorANDdepartment:Cardiology"
+#     policy = ''.join(policy_from_form.split())
+#     current_app.logger.info(f"---UPLOAD DEBUG--- Original Policy: '{policy_from_form}', Cleaned Policy: '{policy}'")
+#     # === KẾT THÚC THAY ĐỔI ===
+
+#     data = file.read()
+#     record_id = str(uuid.uuid4())
+#     s3_key = f"{uid}/{record_id}.enc"
+
+#     try:
+#         pk_base64 = PublicKeyManager.get_public_key()
+#         pk_bytes = base64.b64decode(pk_base64)
+#         pk = bytesToObject(pk_bytes, abe.group)
+#         ciphertext = abe.encrypt(pk, data, policy)
+        
+#         import struct
+#         abe_key_bytes = objectToBytes(ciphertext['abe_key'], abe.group)
+#         iv_bytes = ciphertext['iv']
+#         data_bytes = ciphertext['data']
+#         encrypted_data = struct.pack(
+#             f'!I{len(abe_key_bytes)}sI{len(iv_bytes)}sI{len(data_bytes)}s',
+#             len(abe_key_bytes), abe_key_bytes,
+#             len(iv_bytes), iv_bytes,  
+#             len(data_bytes), data_bytes
+#         )
+#         ctdk_part = objectToBytes(ciphertext['abe_key'], abe.group)
+#         TAClient.store_ctdk(record_id, ctdk_part)
+
+#         upload_to_s3(encrypted_data, s3_key)
+
+#         ef = EhrFile(
+#             record_id=record_id,
+#             filename=file.filename,
+#             s3_key=s3_key,
+#             policy=policy,
+#             owner_id=uid
+#         )
+#         db.session.add(ef)
+#         db.session.commit()
+        
+#         return jsonify({
+#             "record_id": record_id,
+#             "message": "File uploaded and encrypted successfully"
+#         }), 201
+
+#     except Exception as e:
+#         db.session.rollback()
+#         current_app.logger.error(f"Upload process failed: {e}")
+#         traceback.print_exc()
+#         return jsonify({
+#             "msg": "Upload process failed",
+#             "error": str(e)
+#         }), 500
 
 @ehr_bp.route('/upload', methods=['POST'])
-#@jwt_required()
+@jwt_required()
 def upload():
-    uid = 1
+    # Lấy uid từ token, không hardcode nữa
+    uid = get_jwt_identity() 
     file = request.files.get('file')
-    policy = request.form.get('policy')
     
-    if not file or not policy:
-        return jsonify({"msg": "file and policy required"}), 400
+    # 1. Nhận policy từ form vào biến `policy_from_form`
+    policy_from_form = request.form.get('policy')
+    
+    if not file or not policy_from_form:
+        return jsonify({"msg": "file và policy là bắt buộc"}), 400
+
+    # 2. "Dọn dẹp" chuỗi policy và lưu vào biến `cleaned_policy`
+    cleaned_policy = ''.join(policy_from_form.split())
+    current_app.logger.info(f"---UPLOAD DEBUG--- User {uid} uploading with Original Policy: '{policy_from_form}', Cleaned Policy for ABE: '{cleaned_policy}'")
 
     data = file.read()
     record_id = str(uuid.uuid4())
+    s3_key = f"{uid}/{record_id}.enc"
 
     try:
-        # 1. ✅ SỬA: Get public key với caching
-        print("🔍 Step 1: Getting public key...")
-        try:
-            pk_base64 = PublicKeyManager.get_public_key()
-            print(f"✅ Got public key, length: {len(pk_base64)}")
-        except Exception as e:
-            print(f"❌ Failed to get public key: {e}")
-            return jsonify({"msg": f"Failed to get public key: {str(e)}"}), 500
+        pk_base64 = PublicKeyManager.get_public_key()
+        pk_bytes = base64.b64decode(pk_base64)
+        pk = bytesToObject(pk_bytes, abe.group)
         
-        # 2. DEBUG: Test public key deserialization
-        print("🔍 Step 2: Deserializing public key...")
-        try:
-            pk_bytes = base64.b64decode(pk_base64)
-            print(f"✅ Base64 decoded, length: {len(pk_bytes)}")
-            pk = bytesToObject(pk_bytes, abe.group)
-            print("✅ Public key deserialized successfully")
-        except Exception as e:
-            print(f"❌ Failed to deserialize public key: {e}")
-            import traceback
-            traceback.print_exc()
-            return jsonify({"msg": f"Public key deserialize failed: {str(e)}"}), 500
+        # 3. Sử dụng `cleaned_policy` để mã hóa
+        ciphertext = abe.encrypt(pk, data, cleaned_policy)
         
-        # 3. DEBUG: Ensure data is bytes
-        print("🔍 Step 3: Preparing data...")
-        if isinstance(data, str):
-            print("⚠️ Data is string, converting to bytes")
-            data = data.encode('utf-8')
-        print(f"✅ Final data type: {type(data)}, length: {len(data)}")
-        
-        # 4. DEBUG: Test encryption
-        print("🔍 Step 4: Starting encryption...")
-        try:
-            ciphertext = abe.encrypt(pk, data, policy)
-            print("✅ Encryption successful")
-            print(f"🔍 Ciphertext type: {type(ciphertext)}")
-            print(f"🔍 Ciphertext keys: {ciphertext.keys() if isinstance(ciphertext, dict) else 'Not a dict'}")
-        except Exception as e:
-            print(f"❌ Encryption failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return jsonify({"msg": f"Encryption failed: {str(e)}"}), 500
-        
-        # 5. DEBUG: Serialize ciphertext để lưu trữ (SỬA CÁCH NÀY)
-        print("🔍 Step 5: Serializing ciphertext...")
-        try:
-            # Serialize từng phần riêng biệt
-            abe_key_bytes = objectToBytes(ciphertext['abe_key'], abe.group)
-            iv_bytes = ciphertext['iv']  # IV đã là bytes
-            data_bytes = ciphertext['data']  # Encrypted data đã là bytes
-            
-            # Tạo structure để lưu trữ
-            import struct
-            encrypted_data = struct.pack(
-                f'!I{len(abe_key_bytes)}sI{len(iv_bytes)}sI{len(data_bytes)}s',
-                len(abe_key_bytes), abe_key_bytes,
-                len(iv_bytes), iv_bytes,  
-                len(data_bytes), data_bytes
-            )
-            
-            print(f"✅ Serialization successful, length: {len(encrypted_data)}")
-        except Exception as e:
-            print(f"❌ Serialization failed: {e}")
-            return jsonify({"msg": f"Serialization failed: {str(e)}"}), 500
-        
-        # 6. Store CTdk (chỉ abe_key part)
-        print("🔍 Step 6: Storing CTdk...")
-        try:
-            ctdk_part = objectToBytes(ciphertext['abe_key'], abe.group)
-            TAClient.store_ctdk(record_id, ctdk_part)
-            print("✅ CTdk stored successfully")
-        except Exception as e:
-            print(f"❌ Store CTdk failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return jsonify({"msg": f"Store CTdk failed: {str(e)}"}), 500
-        
-        # 7. Save file and metadata
-        print("🔍 Step 7: Saving to disk...")
-        file_path = os.path.join(UPLOAD_FOLDER, f"{record_id}.enc")
-        with open(file_path, 'wb') as f:
-            f.write(encrypted_data)
-            
-        
+        # ... (phần đóng gói dữ liệu để upload giữ nguyên)
+        import struct
+        abe_key_bytes = objectToBytes(ciphertext['abe_key'], abe.group)
+        iv_bytes = ciphertext['iv']
+        data_bytes = ciphertext['data']
+        encrypted_data = struct.pack(
+            f'!I{len(abe_key_bytes)}sI{len(iv_bytes)}sI{len(data_bytes)}s',
+            len(abe_key_bytes), abe_key_bytes,
+            len(iv_bytes), iv_bytes,  
+            len(data_bytes), data_bytes
+        )
+        ctdk_part = objectToBytes(ciphertext['abe_key'], abe.group)
+        TAClient.store_ctdk(record_id, ctdk_part)
+
+        upload_to_s3(encrypted_data, s3_key)
+
+        # 4. Tạo bản ghi trong DB, lưu policy GỐC để người dùng dễ đọc
         ef = EhrFile(
             record_id=record_id,
             filename=file.filename,
-            s3_key=file_path,
-            policy=policy,
+            s3_key=s3_key,
+            policy=policy_from_form, # <-- Lưu policy gốc, chưa bị dọn dẹp
             owner_id=uid
         )
         db.session.add(ef)
         db.session.commit()
-        print("✅ Upload completed successfully")
         
         return jsonify({
             "record_id": record_id,
             "message": "File uploaded and encrypted successfully"
         }), 201
 
-
     except Exception as e:
-        print(f"❌ Upload failed: {e}")
-        import traceback
+        db.session.rollback()
+        current_app.logger.error(f"Upload process failed for user {uid}: {e}")
         traceback.print_exc()
-        return jsonify({"msg": f"Encryption failed: {str(e)}"}), 500
+        return jsonify({
+            "msg": "Upload process failed",
+            "error": str(e)
+        }), 500
 
 @ehr_bp.route('/download/<record_id>', methods=['POST'])
-#@jwt_required()
+@jwt_required()
 def download(record_id):
-    uid = 1
+    uid = get_jwt_identity() # <-- Lấy uid từ token
+    # uid = 1
+    raw_sk = request.json.get('secret_key')
+    current_app.logger.debug(f"Raw secret_key from client: {raw_sk!r}")
     
     try:
-        # 1. Fetch metadata
         ef = EhrFile.query.filter_by(record_id=record_id).first_or_404()
-        if ef.owner_id != uid:
-            return jsonify({"msg": "Access denied - not file owner"}), 403
-
-        # ✅ SỬA: Handle multiple secret key input methods
-        sk_b64 = None
-        
-        # Method 1: JSON payload
-        if request.is_json and 'secret_key' in request.json:
-            sk_b64 = request.json['secret_key']
-            print("🔍 Secret key from JSON payload")
-        
-        # Method 2: File upload (existing)
-        elif 'sk_file' in request.files:
-            sk_file = request.files['sk_file']
-            sk_content = sk_file.read().decode('utf-8')
-            try:
-                # Try parse as JSON first
-                import json
-                key_data = json.loads(sk_content)
-                sk_b64 = key_data['secret_key']
-                print("🔍 Secret key from JSON file")
-            except:
-                # Fallback to raw base64
-                sk_b64 = sk_content.strip()
-                print("🔍 Secret key from raw file")
-        
-        # Method 3: Form data
-        elif 'secret_key' in request.form:
-            sk_b64 = request.form['secret_key']
-            print("🔍 Secret key from form data")
-        
+        sk_b64 = request.json.get('secret_key')
         if not sk_b64:
-            return jsonify({
-                "msg": "Secret key required for decryption",
-                "methods": [
-                    "JSON: {'secret_key': 'base64_encoded_key'}",
-                    "File upload: sk_file parameter",
-                    "Form data: secret_key parameter"
-                ],
-                "example": {
-                    "curl_json": f"curl -X POST /download/{record_id} -H 'Content-Type: application/json' -d '{{\"secret_key\": \"your_key_here\"}}'",
-                    "curl_file": f"curl -X POST /download/{record_id} -F 'sk_file=@your_key_file.json'",
-                    "curl_form": f"curl -X POST /download/{record_id} -F 'secret_key=your_key_here'"
-                }
-            }), 400
+            return jsonify({"msg": "Secret key is required"}), 400
 
-        # 2. ✅ SỬA: Load public key với caching
+        encrypted_data = download_from_s3(ef.s3_key)
+        
         pk_base64 = PublicKeyManager.get_public_key()
         pk_bytes = base64.b64decode(pk_base64)
         pk = bytesToObject(pk_bytes, abe.group)
+        # sk_bytes = base64.b64decode(sk_b64)
+        # sk = abe.deserialize_key(sk_bytes)
+        sk = abe.deserialize_key(sk_b64)    
         
-        # 3. Deserialize secret key từ client
-        try:
-            sk_bytes = base64.b64decode(sk_b64)
-            sk = abe.deserialize_key(sk_bytes)
-            print("✅ Secret key deserialized successfully")
-        except Exception as e:
-            return jsonify({"msg": f"Invalid secret key format: {str(e)}"}), 400
-        
-        # 4. Đọc encrypted data và deserialize
-        with open(ef.s3_key, 'rb') as f:
-            encrypted_data = f.read()
-        
-        # 5. Deserialize từ custom format
         import struct
-        
-        # Read abe_key
         abe_key_len = struct.unpack('!I', encrypted_data[:4])[0]
         abe_key_bytes = encrypted_data[4:4+abe_key_len]
         abe_key = bytesToObject(abe_key_bytes, abe.group)
-        
-        # Read IV
         offset = 4 + abe_key_len
         iv_len = struct.unpack('!I', encrypted_data[offset:offset+4])[0]
         iv = encrypted_data[offset+4:offset+4+iv_len]
-        
-        # Read encrypted data
         offset = offset + 4 + iv_len
         data_len = struct.unpack('!I', encrypted_data[offset:offset+4])[0]
         data = encrypted_data[offset+4:offset+4+data_len]
-        
-        # Reconstruct ciphertext
-        ciphertext = {
-            'abe_key': abe_key,
-            'iv': iv,
-            'data': data
-        }
-        
-        # 7. Decrypt với ABE Core
+        ciphertext = {'abe_key': abe_key, 'iv': iv, 'data': data}
         plaintext = abe.decrypt(pk, sk, ciphertext)
-        
-        # ✅ THÊM: Clear sensitive data from memory
-        del sk_bytes, sk, sk_b64
-        import gc
-        gc.collect()
-        
+
         if plaintext is None:
             return jsonify({
                 "msg": "Decryption failed - Access denied",
@@ -348,32 +429,42 @@ def download(record_id):
                 "policy": ef.policy
             }), 403
 
-        # 8. Return file
-        return send_file(
-            io.BytesIO(plaintext),
-            as_attachment=True,
-            download_name=ef.filename,
+        # return send_file(
+        #     io.BytesIO(plaintext),
+        #     as_attachment=True,
+        #     download_name=ef.filename,
+        #     mimetype='application/octet-stream'
+        # )
+        resp = Response(
+            plaintext,
             mimetype='application/octet-stream'
         )
+        resp.headers["Content-Disposition"] = f'attachment; filename="{ef.filename}"'
+        # Bắt buộc tắt mọi nén
+        resp.headers["Content-Encoding"] = "identity"
+        resp.direct_passthrough            = False
+        current_app.logger.debug(f"Response headers before return: {resp.headers}")
+        return resp
 
+    except FileNotFoundError as e:
+        return jsonify({"msg": "File not found on the server.", "error": str(e)}), 404
+    # except Exception as e:
+    #     current_app.logger.error(f"Download process failed for record {record_id}: {e}")
+    #     traceback.print_exc()
+    #     return jsonify({"msg": "Download process failed", "error": str(e)}), 500
     except Exception as e:
-        # ✅ THÊM: Clear sensitive data even on error
-        for var in ['sk_bytes', 'sk', 'sk_b64']:
-            if var in locals():
-                del locals()[var]
-        import gc
-        gc.collect()
-        
-        print(f"❌ Download failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({"msg": f"Decryption failed: {str(e)}"}), 500
+        tb = traceback.format_exc()
+        current_app.logger.error(tb)
+        return jsonify({
+            "msg":   "Download process failed",
+            "error": str(e),
+            "traceback": tb
+        }), 500
 
 @ehr_bp.route('/files', methods=['GET'])
 #@jwt_required()
 def list_files():
     """List all files owned by current user"""
-    #uid = get_jwt_identity()
     uid = 1
     files = EhrFile.query.filter_by(owner_id=uid).all()
     
@@ -386,30 +477,6 @@ def list_files():
         } for f in files]
     }), 200
 
-@ehr_bp.route('/delete/<record_id>', methods=['DELETE'])
-#@jwt_required()
-def delete_file(record_id):
-    """Delete encrypted file and metadata"""
-    #uid = get_jwt_identity()
-    uid = 1
-    ef = EhrFile.query.filter_by(record_id=record_id).first_or_404()
-    if ef.owner_id != uid:
-        return jsonify({"msg": "Access denied"}), 403
-    
-    try:
-        # Delete encrypted file
-        if os.path.exists(ef.s3_key):
-            os.remove(ef.s3_key)
-        
-        # Delete metadata
-        db.session.delete(ef)
-        db.session.commit()
-        
-        return jsonify({"msg": "File deleted successfully"}), 200
-        
-    except Exception as e:
-        return jsonify({"msg": f"Delete failed: {str(e)}"}), 500
-
 @ehr_bp.route('/validate-key', methods=['POST'])
 def validate_secret_key():
     """Validate secret key format without storing it"""
@@ -418,13 +485,10 @@ def validate_secret_key():
         if not sk_b64:
             return jsonify({"valid": False, "msg": "Secret key required"}), 400
         
-        # Try to deserialize
         sk_bytes = base64.b64decode(sk_b64)
         sk = abe.deserialize_key(sk_bytes)
         
-        # Clear from memory immediately
         del sk_bytes, sk, sk_b64
-        import gc
         gc.collect()
         
         return jsonify({
@@ -446,15 +510,10 @@ def get_key_info():
         if not sk_b64:
             return jsonify({"msg": "Secret key required"}), 400
         
-        sk_bytes = base64.b64decode(sk_b64)
-        
-        # Clear from memory
-        del sk_bytes, sk_b64
-        import gc
-        gc.collect()
+        key_size = len(base64.b64decode(sk_b64))
         
         return jsonify({
-            "key_size_bytes": len(base64.b64decode(request.json.get('secret_key'))),
+            "key_size_bytes": key_size,
             "format": "Base64 encoded CP-ABE secret key",
             "usage": "Use this key to decrypt files you have access to"
         }), 200
@@ -462,24 +521,65 @@ def get_key_info():
     except Exception as e:
         return jsonify({"msg": f"Invalid key: {str(e)}"}), 400
 
-# Thêm constants
+# --- PublicKeyManager và các route liên quan (Giữ nguyên) ---
 PUBLIC_KEY_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'keys', 'public_key.json')
-PUBLIC_KEY_CACHE_TIME = 3600  # 1 hour cache
+PUBLIC_KEY_CACHE_TIME = 3600
 
-# Tạo thư mục keys
 KEYS_FOLDER = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'keys')
 os.makedirs(KEYS_FOLDER, exist_ok=True)
 
+class PublicKeyManager:
+    @staticmethod
+    def save_public_key(pk_base64):
+        key_data = {
+            "public_key": pk_base64,
+            "timestamp": datetime.now().timestamp(),
+            "cached_at": datetime.now().isoformat(),
+            "expires_at": (datetime.now().timestamp() + PUBLIC_KEY_CACHE_TIME)
+        }
+        os.makedirs(os.path.dirname(PUBLIC_KEY_FILE), exist_ok=True)
+        with open(PUBLIC_KEY_FILE, 'w') as f:
+            json.dump(key_data, f, indent=2)
+        print(f"✅ Public key cached to {PUBLIC_KEY_FILE}")
+    
+    @staticmethod
+    def load_cached_public_key():
+        try:
+            if not os.path.exists(PUBLIC_KEY_FILE):
+                return None
+            with open(PUBLIC_KEY_FILE, 'r') as f:
+                key_data = json.load(f)
+            if datetime.now().timestamp() > key_data.get('expires_at', 0):
+                print("⚠️ Cached public key expired")
+                return None
+            print("✅ Using cached public key")
+            return key_data['public_key']
+        except Exception as e:
+            print(f"⚠️ Failed to load cached public key: {e}")
+            return None
+    
+    @staticmethod
+    def get_public_key():
+        cached_pk = PublicKeyManager.load_cached_public_key()
+        if cached_pk:
+            return cached_pk
+        
+        print("🔍 Fetching public key from TA...")
+        try:
+            pk_base64 = TAClient.get_public_key()
+            PublicKeyManager.save_public_key(pk_base64)
+            return pk_base64
+        except Exception as e:
+            print(f"❌ Failed to fetch public key from TA: {e}")
+            raise e
+
 @ehr_bp.route('/public-key/refresh', methods=['POST'])
 def refresh_public_key():
-    """Force refresh public key từ TA"""
     try:
-        # Delete cached key
         if os.path.exists(PUBLIC_KEY_FILE):
             os.remove(PUBLIC_KEY_FILE)
         
-        # Fetch fresh key
-        pk_base64 = TAClient.get_public_key_direct()
+        pk_base64 = TAClient.get_public_key() # Sửa: không có hàm get_public_key_direct
         PublicKeyManager.save_public_key(pk_base64)
         
         return jsonify({
@@ -487,19 +587,14 @@ def refresh_public_key():
             "key_preview": f"{pk_base64[:50]}...",
             "cached_at": datetime.now().isoformat()
         }), 200
-        
     except Exception as e:
         return jsonify({"msg": f"Failed to refresh public key: {str(e)}"}), 500
 
 @ehr_bp.route('/public-key/status', methods=['GET'])
 def public_key_status():
-    """Check public key cache status"""
     try:
         if not os.path.exists(PUBLIC_KEY_FILE):
-            return jsonify({
-                "cached": False,
-                "message": "No cached public key found"
-            }), 200
+            return jsonify({"cached": False, "message": "No cached public key found"}), 200
         
         with open(PUBLIC_KEY_FILE, 'r') as f:
             key_data = json.load(f)
@@ -514,83 +609,16 @@ def public_key_status():
             "key_preview": f"{key_data['public_key'][:50]}...",
             "cache_age_seconds": int(datetime.now().timestamp() - key_data.get('timestamp', 0))
         }), 200
-        
     except Exception as e:
         return jsonify({"msg": f"Failed to check key status: {str(e)}"}), 500
 
 @ehr_bp.route('/public-key/get', methods=['GET'])
 def get_public_key_local():
-    """Get public key (from cache or TA)"""
     try:
         pk_base64 = PublicKeyManager.get_public_key()
-        
         return jsonify({
             "public_key": pk_base64,
             "message": "Public key retrieved successfully"
         }), 200
-        
     except Exception as e:
         return jsonify({"msg": f"Failed to get public key: {str(e)}"}), 500
-
-class PublicKeyManager:
-    @staticmethod
-    def save_public_key(pk_base64):
-        """Lưu public key vào file với timestamp"""
-        key_data = {
-            "public_key": pk_base64,
-            "timestamp": datetime.now().timestamp(),
-            "cached_at": datetime.now().isoformat(),
-            "expires_at": (datetime.now().timestamp() + PUBLIC_KEY_CACHE_TIME)
-        }
-        
-        os.makedirs(os.path.dirname(PUBLIC_KEY_FILE), exist_ok=True)
-        with open(PUBLIC_KEY_FILE, 'w') as f:
-            json.dump(key_data, f, indent=2)
-        
-        print(f"✅ Public key cached to {PUBLIC_KEY_FILE}")
-    
-    @staticmethod
-    def load_cached_public_key():
-        """Load public key từ cache nếu còn valid"""
-        try:
-            if not os.path.exists(PUBLIC_KEY_FILE):
-                return None
-            
-            with open(PUBLIC_KEY_FILE, 'r') as f:
-                key_data = json.load(f)
-            
-            # Kiểm tra expiry
-            if datetime.now().timestamp() > key_data.get('expires_at', 0):
-                print("⚠️ Cached public key expired")
-                return None
-            
-            print("✅ Using cached public key")
-            return key_data['public_key']
-            
-        except Exception as e:
-            print(f"⚠️ Failed to load cached public key: {e}")
-            return None
-    
-    @staticmethod
-    def get_public_key():
-        """Get public key với caching mechanism"""
-        # Try cache first
-        cached_pk = PublicKeyManager.load_cached_public_key()
-        if cached_pk:
-            return cached_pk
-        
-        # Fetch từ TA nếu cache miss
-        print("🔍 Fetching public key from TA...")
-        try:
-            pk_base64 = TAClient.get_public_key()
-            
-            # Cache for future use
-            PublicKeyManager.save_public_key(pk_base64)
-            
-            return pk_base64
-            
-        except Exception as e:
-            print(f"❌ Failed to fetch public key from TA: {e}")
-            raise e
-
-

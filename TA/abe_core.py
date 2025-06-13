@@ -133,9 +133,10 @@ class ABECore:
             tuple: (iv, encrypted_data) - vector khởi tạo và dữ liệu đã mã hóa
         '''
         # Chuyển khóa CP-ABE thành khóa AES bằng hàm băm
-        h = hashlib.sha256()
+        h = hashlib.sha512()
         h.update(str(key).encode())
-        aes_key = h.digest()
+        aes_key = h.digest()[:32] 
+        # aes_key = h.digest()
         
         # Tạo vector khởi tạo ngẫu nhiên
         iv = Random.new().read(AES.block_size)
@@ -165,9 +166,10 @@ class ABECore:
             bytes: Dữ liệu gốc
         '''
         # Chuyển khóa CP-ABE thành khóa AES
-        h = hashlib.sha256()
+        h = hashlib.sha512()
         h.update(str(key).encode())
-        aes_key = h.digest()
+        aes_key = h.digest()[:32] 
+        # aes_key = h.digest()
         
         # Giải mã với AES CTR mode
         ctr = Counter.new(128, initial_value=int.from_bytes(iv, 'big'))

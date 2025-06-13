@@ -14,6 +14,9 @@ import os
 import pickle
 import base64
 import hashlib
+import zlib
+from charm.core.engine.util import bytesToObject as _bytesToObject
+
 from Crypto.Cipher import AES
 from Crypto import Random
 from Crypto.Util import Counter
@@ -66,8 +69,70 @@ class ABECore:
     def serialize_key(self, key):
         return base64.b64encode(objectToBytes(key, self.group))
 
+    # def deserialize_key(self, b64_string):
+    #     return bytesToObject(base64.b64decode(b64_string), self.group)
+    # def deserialize_key(self, b64_string):
+    #     """
+    #     Giải Base64 rồi thử zlib.decompress(); nếu fail (dữ liệu chưa nén),
+    #     fallback dùng raw bytes.
+    #     """
+    #     raw = base64.b64decode(b64_string)
+    #     try:
+    #         data = zlib.decompress(raw)
+    #     except zlib.error:
+    #         # header không đúng → dữ liệu chưa nén
+    #         data = raw
+    #     return _bytesToObject(data, self.group)
+
+    # def deserialize_key(self, b64_string):
+    #     """
+    #     Khôi phục khóa từ Base64 string. 
+    #     Thử decode 1 lần; nếu zlib lỗi, decode thêm lần nữa.
+    #     """
+    #     raw = base64.b64decode(b64_string)
+    #     try:
+    #         # Lần 1: raw phải là pickle+zlib
+    #         return bytesToObject(raw, self.group)
+    #     except Exception as e1:
+    #         # Nếu không phải, thử decode thêm lần 2
+    #         try:
+    #             raw2 = base64.b64decode(raw)
+    #             return bytesToObject(raw2, self.group)
+    #         except Exception as e2:
+    #             # Vẫn lỗi thì đẩy exception gốc
+    #             raise e1
+
     def deserialize_key(self, b64_string):
-        return bytesToObject(base64.b64decode(b64_string), self.group)
+        """
+        Khôi phục một secret key.
+        Hàm này đủ mạnh để xử lý cả key cũ (mã hóa 3 lần) và key mới (mã hóa 2 lần).
+        """
+        # Đảm bảo đầu vào là bytes
+        key_data = b64_string.encode('utf-8') if isinstance(b64_string, str) else b64_string
+
+        # Lộ trình 1: Thử giải mã cho key cũ (bị mã hóa 3 lần)
+        try:
+            # Lớp 1
+            decoded_1 = base64.b64decode(key_data)
+            # Lớp 2
+            decoded_2 = base64.b64decode(decoded_1)
+            # `decoded_2` lúc này là output gốc của objectToBytes,
+            # đây là định dạng `bytesToObject` cần.
+            return bytesToObject(decoded_2, self.group)
+        except Exception:
+            # Nếu thất bại, có thể đây là key mới. Chuyển sang lộ trình 2.
+            pass
+
+        # Lộ trình 2: Thử giải mã cho key mới (đã sửa, mã hóa 2 lần)
+        try:
+            # Lớp 1
+            decoded_1 = base64.b64decode(key_data)
+            # `decoded_1` lúc này là output gốc của objectToBytes.
+            return bytesToObject(decoded_1, self.group)
+        except Exception as e:
+            # Nếu cả hai lộ trình đều thất bại, key thực sự bị lỗi.
+            print(f"FATAL: All key deserialization paths failed. Error: {e}")
+            raise ValueError("Secret key data is corrupted or has an invalid format.") from e
     
     def encrypt(self, pk, plaintext, policy):
         '''
@@ -97,54 +162,159 @@ class ABECore:
             'data': sym_encrypted_data
         }
     
+    # def decrypt(self, pk, sk, ciphertext):
+    #     '''
+    #     Giải mã dữ liệu nếu thuộc tính của người dùng thỏa mãn chính sách
+        
+    #     Tham số:
+    #         pk: Khóa công khai
+    #         sk: Khóa bí mật của người dùng
+    #         ciphertext (dict): Bản mã từ hàm encrypt
+            
+    #     Trả về:
+    #         bytes: Dữ liệu gốc nếu giải mã thành công, None nếu thất bại
+    #     '''
+    #     try:
+    #         # Giải mã khóa đối xứng với CP-ABE
+    #         sym_key = self.cpabe.decrypt(pk, sk, ciphertext['abe_key'])
+            
+    #         if sym_key:
+    #             # Giải mã dữ liệu với khóa đối xứng
+    #             return self._symmetric_decrypt(sym_key, ciphertext['iv'], ciphertext['data'])
+    #         return None
+    #     except Exception as e:
+    #         print(f"Decrypt error: {e}")
+    #         return None
+
     def decrypt(self, pk, sk, ciphertext):
         '''
         Giải mã dữ liệu nếu thuộc tính của người dùng thỏa mãn chính sách
-        
-        Tham số:
-            pk: Khóa công khai
-            sk: Khóa bí mật của người dùng
-            ciphertext (dict): Bản mã từ hàm encrypt
-            
-        Trả về:
-            bytes: Dữ liệu gốc nếu giải mã thành công, None nếu thất bại
         '''
         try:
+            # # Giải mã khóa đối xứng với CP-ABE
+            # sym_key = self.cpabe.decrypt(pk, sk, ciphertext['abe_key'])
+            
+            # # Nếu giải mã ABE thành công (sym_key không phải là None)
+            # if sym_key:
+            #     # Giải mã dữ liệu với khóa đối xứng, truyền đúng IV từ ciphertext
+            #     return self._symmetric_decrypt(sym_key, ciphertext['iv'], ciphertext['data'])
+            
+            # # Nếu giải mã ABE thất bại
+            # return None
+            # === BẮT ĐẦU DEBUGGING ===
+            # In ra thông tin để kiểm tra chéo. Đây là bước quan trọng nhất.
+            print("================== ABE DECRYPTION DEBUG ==================")
+            # 1. In ra các thuộc tính có trong KHÓA BÍ MẬT (SK) mà người dùng cung cấp.
+            #    sk['attrs'] là cách để truy cập danh sách thuộc tính bên trong object key của charm-crypto.
+            print(f"[*] Attributes in Secret Key (SK): {sk.get('attrs')}")
+            
+            # 2. In ra chính sách được lưu trong BẢN MÃ (Ciphertext).
+            #    ciphertext['abe_key']['policy'] là cách truy cập chuỗi policy.
+            print(f"[*] Policy in Ciphertext       : {ciphertext['abe_key'].get('policy')}")
+            print("==========================================================")
+            # === KẾT THÚC DEBUGGING ===
+
             # Giải mã khóa đối xứng với CP-ABE
             sym_key = self.cpabe.decrypt(pk, sk, ciphertext['abe_key'])
             
             if sym_key:
-                # Giải mã dữ liệu với khóa đối xứng
+                # Giải mã thành công, chuyển sang giải mã đối xứng
+                print("[+] ABE Decryption SUCCESSFUL. Proceeding to symmetric decryption.")
                 return self._symmetric_decrypt(sym_key, ciphertext['iv'], ciphertext['data'])
+            
+            # Giải mã ABE thất bại
+            print("[-] ABE Decryption FAILED. `cpabe.decrypt` returned None.")
             return None
         except Exception as e:
-            print(f"Decrypt error: {e}")
+            print(f"[!] EXCEPTION during ABE Decryption: {e}") 
+            import traceback
+            traceback.print_exc()
             return None
+
+        # except Exception as e:
+        #     # Dùng print để dễ debug trên server log
+        #     print(f"ABE Decrypt function error: {e}") 
+        #     import traceback
+        #     traceback.print_exc()
+        #     return None
         
+    # def _symmetric_encrypt(self, key, data):
+    #     '''
+    #     Mã hóa dữ liệu với một khóa đối xứng (AES)
+        
+    #     Tham số:
+    #         key: Khóa đối xứng 
+    #         data (bytes): Dữ liệu cần mã hóa
+            
+    #     Trả về:
+    #         tuple: (iv, encrypted_data) - vector khởi tạo và dữ liệu đã mã hóa
+    #     '''
+    #     # Chuyển khóa CP-ABE thành khóa AES bằng hàm băm
+    #     h = hashlib.sha512()
+    #     h.update(str(key).encode())
+    #     aes_key = h.digest()[:32] 
+    #     # aes_key = h.digest()
+        
+    #     # Tạo vector khởi tạo ngẫu nhiên
+    #     iv = Random.new().read(AES.block_size)
+        
+    #     # Mã hóa với AES CTR mode
+    #     ctr = Counter.new(128, initial_value=int.from_bytes(iv, 'big'))
+    #     cipher = AES.new(aes_key, AES.MODE_CTR, counter=ctr)
+        
+    #     # Đảm bảo dữ liệu là bytes
+    #     if isinstance(data, str):
+    #         data = data.encode('utf-8')
+            
+    #     encrypted_data = cipher.encrypt(data)
+        
+    #     return iv, encrypted_data
+    
+    # def _symmetric_decrypt(self, key, iv, encrypted_data):
+    #     '''
+    #     Mã hóa dữ liệu với một khóa đối xứng (AES)
+        
+    #     Tham số:
+    #         key: Khóa đối xứng 
+    #         data (bytes): Dữ liệu cần mã hóa
+            
+    #     Trả về:
+    #         tuple: (iv, encrypted_data) - vector khởi tạo và dữ liệu đã mã hóa
+    #     '''
+    #     h = hashlib.sha512()
+    #     h.update(str(key).encode())
+    #     aes_key = h.digest()[:32] 
+    #     # aes_key = h.digest()
+        
+    #     # Tạo vector khởi tạo ngẫu nhiên
+    #     iv = Random.new().read(AES.block_size)
+        
+    #     # Mã hóa với AES CTR mode
+    #     ctr = Counter.new(128, initial_value=int.from_bytes(iv, 'big'))
+    #     cipher = AES.new(aes_key, AES.MODE_CTR, counter=ctr)
+        
+    #     # Đảm bảo dữ liệu là bytes
+    #     if isinstance(data, str):
+    #         data = data.encode('utf-8')
+            
+    #     encrypted_data = cipher.encrypt(data)
+        
+    #     return iv, encrypted_data
+
     def _symmetric_encrypt(self, key, data):
         '''
         Mã hóa dữ liệu với một khóa đối xứng (AES)
-        
-        Tham số:
-            key: Khóa đối xứng 
-            data (bytes): Dữ liệu cần mã hóa
-            
-        Trả về:
-            tuple: (iv, encrypted_data) - vector khởi tạo và dữ liệu đã mã hóa
+        (Hàm này của bạn đã đúng, giữ nguyên để đối chiếu)
         '''
-        # Chuyển khóa CP-ABE thành khóa AES bằng hàm băm
-        h = hashlib.sha256()
+        h = hashlib.sha512()
         h.update(str(key).encode())
-        aes_key = h.digest()
+        aes_key = h.digest()[:32]
         
-        # Tạo vector khởi tạo ngẫu nhiên
         iv = Random.new().read(AES.block_size)
         
-        # Mã hóa với AES CTR mode
         ctr = Counter.new(128, initial_value=int.from_bytes(iv, 'big'))
         cipher = AES.new(aes_key, AES.MODE_CTR, counter=ctr)
         
-        # Đảm bảo dữ liệu là bytes
         if isinstance(data, str):
             data = data.encode('utf-8')
             
@@ -154,33 +324,22 @@ class ABECore:
     
     def _symmetric_decrypt(self, key, iv, encrypted_data):
         '''
-        Mã hóa dữ liệu với một khóa đối xứng (AES)
-        
-        Tham số:
-            key: Khóa đối xứng 
-            data (bytes): Dữ liệu cần mã hóa
-            
-        Trả về:
-            tuple: (iv, encrypted_data) - vector khởi tạo và dữ liệu đã mã hóa
+        Giải mã dữ liệu với khóa đối xứng (AES) - PHIÊN BẢN ĐÃ SỬA LỖI
         '''
-        h = hashlib.sha256()
+        h = hashlib.sha512()
         h.update(str(key).encode())
-        aes_key = h.digest()
+        aes_key = h.digest()[:32]
         
-        # Tạo vector khởi tạo ngẫu nhiên
-        iv = Random.new().read(AES.block_size)
+        # SỬA LỖI QUAN TRỌNG:
+        # Không tạo IV mới, mà sử dụng IV được truyền vào từ ciphertext.
+        # Dòng `iv = Random.new().read(AES.block_size)` đã bị xóa.
         
-        # Mã hóa với AES CTR mode
+        # Tạo lại bộ đếm counter từ IV đã cho
         ctr = Counter.new(128, initial_value=int.from_bytes(iv, 'big'))
         cipher = AES.new(aes_key, AES.MODE_CTR, counter=ctr)
         
-        # Đảm bảo dữ liệu là bytes
-        if isinstance(data, str):
-            data = data.encode('utf-8')
-            
-        encrypted_data = cipher.encrypt(data)
-        
-        return iv, encrypted_data
+        # Giải mã dữ liệu
+        return cipher.decrypt(encrypted_data)
 
     def save_public_key(self, pk, filename_prefix='keys', directory='.'):
         '''
