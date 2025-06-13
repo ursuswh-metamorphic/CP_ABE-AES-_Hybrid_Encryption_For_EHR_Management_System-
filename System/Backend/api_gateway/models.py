@@ -12,6 +12,7 @@ class User(db.Model):
     password_hash  = db.Column(db.Text, nullable=False)
     role           = db.Column(db.String(50))
     department     = db.Column(db.String(50))
+    downloaded_sk  = db.Column(db.Boolean, default=False, nullable=False)
     created_at     = db.Column(db.DateTime, default=datetime.utcnow)
 
 class EhrFile(db.Model):

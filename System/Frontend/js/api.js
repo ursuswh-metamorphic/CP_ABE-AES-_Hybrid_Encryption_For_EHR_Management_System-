@@ -33,12 +33,18 @@ async function login(email, password) {
 // }
 
 async function keygen(attrs) {
-  const res = await getJson('/api/keygen/', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
+  // const res = await getJson('/api/keygen/', {
+  //   method:'POST',
+  //   headers:{'Content-Type':'application/json'},
+  //   body: JSON.stringify({ attributes: attrs })
+  // });
+  // return res;
+  const res = await request('/api/keygen/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ attributes: attrs })
   });
-  return res;
+  return res.json();
 }
 
 async function uploadEhr(file, policy) {

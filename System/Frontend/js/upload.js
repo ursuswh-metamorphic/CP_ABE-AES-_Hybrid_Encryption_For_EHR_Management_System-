@@ -18,7 +18,13 @@ document.getElementById('uploadForm').addEventListener('submit', async e => {
     alert.className = 'alert alert-success';
     alert.classList.remove('d-none');
   } catch(err) {
-    alert.textContent = err.msg || 'Lỗi upload';
+    // alert.textContent = err.msg || 'Lỗi upload';
+    // alert.className = 'alert alert-danger';
+    // alert.classList.remove('d-none');
+
+    console.error("Upload error response:", err);
+    const message = err.detail || err.msg || 'Lỗi upload';
+    alert.textContent = message;
     alert.className = 'alert alert-danger';
     alert.classList.remove('d-none');
   }

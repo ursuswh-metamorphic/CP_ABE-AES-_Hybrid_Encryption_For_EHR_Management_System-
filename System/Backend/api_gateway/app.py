@@ -1,5 +1,6 @@
 import ssl
 from flask import Flask
+from flask import redirect, url_for
 from config import Config
 from extensions import db, jwt, migrate
 from routes.auth import auth_bp
@@ -16,6 +17,16 @@ def create_app():
     db.init_app(app)
     migrate.init_app(app, db)
     jwt.init_app(app)
+
+       # --- Khi token hết hạn hoặc không có token thì redirect về login ---
+    # @jwt.expired_token_loader
+    # def expired_token_callback(jwt_header, jwt_payload):
+    #     return redirect(url_for('auth.login')), 302
+
+    # @jwt.unauthorized_loader
+    # def missing_token_callback(reason):
+    #    return redirect(url_for('auth.login')), 302
+
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(keygen_bp)

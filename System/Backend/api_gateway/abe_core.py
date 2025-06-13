@@ -135,7 +135,8 @@ class ABECore:
         # Chuyển khóa CP-ABE thành khóa AES bằng hàm băm
         h = hashlib.sha512()
         h.update(str(key).encode())
-        aes_key = h.digest()
+        aes_key = h.digest()[:32] 
+        # aes_key = h.digest()
         
         # Tạo vector khởi tạo ngẫu nhiên
         iv = Random.new().read(AES.block_size)
@@ -165,7 +166,8 @@ class ABECore:
         '''
         h = hashlib.sha512()
         h.update(str(key).encode())
-        aes_key = h.digest()
+        aes_key = h.digest()[:32] 
+        # aes_key = h.digest()
         
         # Tạo vector khởi tạo ngẫu nhiên
         iv = Random.new().read(AES.block_size)
