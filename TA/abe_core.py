@@ -81,51 +81,61 @@ class ABECore:
         Trả về:
             dict: Bản mã chứa dữ liệu đã được mã hóa và thông tin chính sách
         '''
-        # Tạo khóa đối xứng ngẫu nhiên
-        sym_key = self.group.random(GT)
-        
-        # Mã hóa khóa đối xứng với CP-ABE
-        abe_encrypted_key = self.cpabe.encrypt(pk, sym_key, policy)
-        
-        # Mã hóa dữ liệu với khóa đối xứng
-        iv, sym_encrypted_data = self._symmetric_encrypt(sym_key, plaintext)
-        
-        # Trả về bản mã hoàn chỉnh
-        return {
-            'abe_key': abe_encrypted_key,
-            'iv': iv,
-            'data': sym_encrypted_data
-        }
+        try:
+            sym_key = self.group.random(GT)
+            
+            # Mã hóa khóa đối xứng với CP-ABE
+            original_abe_key = self.abe.encrypt(pk, sym_key, policy)
+            if original_abe_key is None:
+                raise ValueError("ABE encryption failed. Check the policy syntax.")
+
+            # Đóng gói policy cùng với bản mã ABE
+            packaged_abe_key = {
+                'policy': policy,
+                'ciphertext': original_abe_key
+            }
+
+            iv, sym_encrypted_data = self._symmetric_encrypt(sym_key, plaintext)
+            
+            return {
+                'abe_key': packaged_abe_key, # Trả về gói mới
+                'iv': iv,
+                'data': sym_encrypted_data
+            }
+        except Exception as e:
+            print(f"Encryption failed: {e}")
+            traceback.print_exc()
+            return None
     
-    def decrypt(self, pk, sk, ciphertext, policy):
+    def decrypt(self, pk, sk, ct):
         '''
         Giải mã dữ liệu nếu thuộc tính của người dùng thỏa mãn chính sách
         
         Tham số:
             pk: Khóa công khai
             sk: Khóa bí mật của người dùng
-            ciphertext (dict): Bản mã từ hàm encrypt
-            policy (str): Chính sách truy cập được dùng để mã hóa
+            ct (dict): Bản mã từ hàm encrypt
             
         Trả về:
             bytes: Dữ liệu gốc nếu giải mã thành công, None nếu thất bại
         '''
         try:
-            # Sửa đổi quan trọng: Thay vì để thư viện tự tìm policy,
-            # chúng ta truyền policy một cách tường minh vào hàm decrypt của charm.
-            sym_key = self.cpabe.decrypt(pk, sk, ciphertext['abe_key'], policy)
+            # Mở gói để lấy lại policy và bản mã ABE gốc
+            packaged_abe_key = ct['abe_key']
+            policy = packaged_abe_key['policy']
+            original_abe_key = packaged_abe_key['ciphertext']
+
+            # Giải mã khóa đối xứng bằng ABE, dùng policy vừa lấy được
+            sym_key = self.abe.decrypt(pk, sk, original_abe_key, policy)
             
             if sym_key:
-                # Giải mã dữ liệu với khóa đối xứng
-                return self._symmetric_decrypt(sym_key, ciphertext['iv'], ciphertext['data'])
-            
-            # Nếu giải mã thất bại (thuộc tính không khớp), in ra thông báo
-            print("[-] ABE Decryption FAILED. Attributes do not satisfy the policy.")
+                print("[+] ABE Decryption SUCCESSFUL. Proceeding to symmetric decryption.")
+                return self._symmetric_decrypt(sym_key, ct['iv'], ct['data'])
+
+            print("[-] ABE Decryption FAILED. The secret key attributes do not satisfy the policy.")
             return None
         except Exception as e:
-            # In ra lỗi chi tiết nếu có exception xảy ra
-            print(f"Decrypt error: {e}")
-            import traceback
+            print(f"[!] EXCEPTION during decryption: {e}") 
             traceback.print_exc()
             return None
         

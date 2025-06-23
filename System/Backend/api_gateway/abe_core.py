@@ -80,21 +80,15 @@ class ABECore:
         try:
             sym_key = self.group.random(GT)
             
-            # Mã hóa khóa đối xứng với CP-ABE
-            original_abe_key = self.abe.encrypt(pk, sym_key, policy)
-            if original_abe_key is None:
+            # Sửa lỗi: Gọi hàm trên self.abe
+            abe_encrypted_key = self.abe.encrypt(pk, sym_key, policy)
+            if abe_encrypted_key is None:
                 raise ValueError("ABE encryption failed. Check the policy syntax.")
-
-            # Đóng gói policy cùng với bản mã ABE
-            packaged_abe_key = {
-                'policy': policy,
-                'ciphertext': original_abe_key
-            }
 
             iv, sym_encrypted_data = self._symmetric_encrypt(sym_key, plaintext)
             
             return {
-                'abe_key': packaged_abe_key, # Trả về gói mới
+                'abe_key': abe_encrypted_key,
                 'iv': iv,
                 'data': sym_encrypted_data
             }
@@ -103,7 +97,7 @@ class ABECore:
             traceback.print_exc()
             return None
     
-    def decrypt(self, pk, sk, ct):
+    def decrypt(self, pk, sk, ct, policy):
         '''
         Giải mã dữ liệu nếu thuộc tính của người dùng thỏa mãn chính sách
         
@@ -111,18 +105,14 @@ class ABECore:
             pk: Khóa công khai
             sk: Khóa bí mật của người dùng
             ct (dict): Bản mã từ hàm encrypt
+            policy (str): Chính sách truy cập được dùng để mã hóa (đã được làm sạch)
             
         Trả về:
             bytes: Dữ liệu gốc nếu giải mã thành công, None nếu thất bại
         '''
         try:
-            # Mở gói để lấy lại policy và bản mã ABE gốc
-            packaged_abe_key = ct['abe_key']
-            policy = packaged_abe_key['policy']
-            original_abe_key = packaged_abe_key['ciphertext']
-
-            # Giải mã khóa đối xứng bằng ABE, dùng policy vừa lấy được
-            sym_key = self.abe.decrypt(pk, sk, original_abe_key, policy)
+            # Sửa lỗi: Gọi hàm trên self.abe và truyền vào policy
+            sym_key = self.abe.decrypt(pk, sk, ct['abe_key'], policy)
             
             if sym_key:
                 print("[+] ABE Decryption SUCCESSFUL. Proceeding to symmetric decryption.")
