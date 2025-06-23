@@ -82,7 +82,7 @@
 
       try {
     // 1. Đăng nhập để lấy token
-    const res = await fetch('https://127.0.0.1:5000/api/auth/login', {
+    const res = await fetch('http://127.0.0.1:5000/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password })
@@ -94,7 +94,7 @@
     localStorage.setItem('token', token);
 
     // 2. Gọi /api/auth/me để lấy thông tin user
-    const meRes = await fetch('https://127.0.0.1:5000/api/auth/me', {
+    const meRes = await fetch('http://127.0.0.1:5000/api/auth/me', {
       headers: { 'Authorization': `Bearer ${token}` }
     });
     const profile = await meRes.json();

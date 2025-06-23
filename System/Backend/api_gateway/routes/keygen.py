@@ -2,7 +2,8 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from extensions import db
 from models import User
-import requests, traceback
+import requests
+import traceback
 
 keygen_bp = Blueprint('keygen', __name__, url_prefix='/api/keygen')
 
@@ -10,15 +11,11 @@ keygen_bp = Blueprint('keygen', __name__, url_prefix='/api/keygen')
 @jwt_required()
 def keygen():
     uid = get_jwt_identity()
-    user = User.query.get(uid)
+    user = User.query.get_or_404(uid)
 
-    # 1) Chặn nếu đã tải
     if user.downloaded_sk:
-        return jsonify({
-            "msg": "Bạn chỉ được tải SK một lần. Vui lòng liên hệ quản trị viên để được cấp lại."
-        }), 403
+        return jsonify({"msg": "Bạn chỉ được tải SK một lần. Vui lòng liên hệ quản trị viên để được cấp lại."}), 403
 
-    # 2) Gọi TA service
     try:
         res = requests.post(
             "https://127.0.0.1:5001/keygen",
@@ -36,9 +33,7 @@ def keygen():
     if not sk:
         return jsonify({"msg": "TA service trả về không có SK"}), 500
 
-    # 3) Đánh dấu đã tải và lưu DB
     user.downloaded_sk = True
     db.session.commit()
 
-    # 4) Trả về SK cho frontend
     return jsonify({"sk": sk}), 200

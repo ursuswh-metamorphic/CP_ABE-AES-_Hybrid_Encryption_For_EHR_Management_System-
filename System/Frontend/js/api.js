@@ -74,7 +74,7 @@
 
 
 // const API_BASE = 'https://api.your-domain.com';
-const API_BASE = 'https://127.0.0.1:5000';
+const API_BASE = 'http://127.0.0.1:5000';
 
 async function request(path, opts = {}) {
   const token = localStorage.getItem('token');

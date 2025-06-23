@@ -33,25 +33,29 @@ def create_app():
     app.register_blueprint(ehr_bp)
     return app
 
+# if __name__ == "__main__":
+#     app = create_app()
+    
+#     # Cấu hình TLS 1.3 cho HTTPS
+#     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+#     context.minimum_version = ssl.TLSVersion.TLSv1_3  # Force TLS 1.3
+#     context.maximum_version = ssl.TLSVersion.TLSv1_3
+    
+#     # Load SSL certificates
+#     # Sử dụng ta.crt và ta.key từ thư mục gốc
+#     import os
+#     cert_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'certs', 'ta.crt')
+#     key_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'certs', 'ta.key')
+    
+#     try:
+#         context.load_cert_chain(cert_path, key_path)
+#         print("Starting API Gateway with HTTPS (TLS 1.3)")
+#         app.run(host='0.0.0.0', port=5000, ssl_context=context, debug=True)
+#     except FileNotFoundError as e:
+#         print(f"SSL Certificate not found: {e}")
+#         print("Falling back to HTTP (insecure)")
+#         app.run(host='0.0.0.0', port=5000, debug=True)
+
 if __name__ == "__main__":
     app = create_app()
-    
-    # Cấu hình TLS 1.3 cho HTTPS
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.minimum_version = ssl.TLSVersion.TLSv1_3  # Force TLS 1.3
-    context.maximum_version = ssl.TLSVersion.TLSv1_3
-    
-    # Load SSL certificates
-    # Sử dụng ta.crt và ta.key từ thư mục gốc
-    import os
-    cert_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'certs', 'ta.crt')
-    key_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'certs', 'ta.key')
-    
-    try:
-        context.load_cert_chain(cert_path, key_path)
-        print("Starting API Gateway with HTTPS (TLS 1.3)")
-        app.run(host='0.0.0.0', port=5000, ssl_context=context, debug=True)
-    except FileNotFoundError as e:
-        print(f"SSL Certificate not found: {e}")
-        print("Falling back to HTTP (insecure)")
-        app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)

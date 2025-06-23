@@ -97,7 +97,7 @@ class ABECore:
             'data': sym_encrypted_data
         }
     
-    def decrypt(self, pk, sk, ciphertext):
+    def decrypt(self, pk, sk, ciphertext, policy):
         '''
         Giải mã dữ liệu nếu thuộc tính của người dùng thỏa mãn chính sách
         
@@ -105,20 +105,28 @@ class ABECore:
             pk: Khóa công khai
             sk: Khóa bí mật của người dùng
             ciphertext (dict): Bản mã từ hàm encrypt
+            policy (str): Chính sách truy cập được dùng để mã hóa
             
         Trả về:
             bytes: Dữ liệu gốc nếu giải mã thành công, None nếu thất bại
         '''
         try:
-            # Giải mã khóa đối xứng với CP-ABE
-            sym_key = self.cpabe.decrypt(pk, sk, ciphertext['abe_key'])
+            # Sửa đổi quan trọng: Thay vì để thư viện tự tìm policy,
+            # chúng ta truyền policy một cách tường minh vào hàm decrypt của charm.
+            sym_key = self.cpabe.decrypt(pk, sk, ciphertext['abe_key'], policy)
             
             if sym_key:
                 # Giải mã dữ liệu với khóa đối xứng
                 return self._symmetric_decrypt(sym_key, ciphertext['iv'], ciphertext['data'])
+            
+            # Nếu giải mã thất bại (thuộc tính không khớp), in ra thông báo
+            print("[-] ABE Decryption FAILED. Attributes do not satisfy the policy.")
             return None
         except Exception as e:
+            # In ra lỗi chi tiết nếu có exception xảy ra
             print(f"Decrypt error: {e}")
+            import traceback
+            traceback.print_exc()
             return None
         
     def _symmetric_encrypt(self, key, data):
