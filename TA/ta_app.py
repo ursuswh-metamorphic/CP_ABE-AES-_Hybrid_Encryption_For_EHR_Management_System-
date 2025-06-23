@@ -44,7 +44,7 @@ def keygen():
     # Serialize và trả về dạng base64
     sk_bytes = abe.serialize_key(sk)
     return jsonify({
-        "sk": base64.b64encode(sk_bytes).decode()
+        "sk": sk_bytes.decode('utf-8')
     }), 200
 
 
@@ -135,7 +135,9 @@ def decrypt():
 
         abe_key_len = struct.unpack('!I', encrypted_data_from_s3[:4])[0]
         abe_key_bytes = encrypted_data_from_s3[4:4+abe_key_len]
-        abe_key = bytesToObject(abe_key_bytes, abe.group)
+        
+        abe_key_packaged = bytesToObject(abe_key_bytes, abe.group)
+
         offset = 4 + abe_key_len
         iv_len = struct.unpack('!I', encrypted_data_from_s3[offset:offset+4])[0]
         iv = encrypted_data_from_s3[offset+4:offset+4+iv_len]
@@ -143,7 +145,11 @@ def decrypt():
         data_len = struct.unpack('!I', encrypted_data_from_s3[offset:offset+4])[0]
         data = encrypted_data_from_s3[offset+4:offset+4+data_len]
         
-        ciphertext = {'abe_key': abe_key, 'iv': iv, 'data': data}
+        # Tạo cấu trúc ciphertext mà hàm abe.decrypt mong đợi.
+        # 'abe_key' bây giờ là một gói dữ liệu.
+        ciphertext = {'abe_key': abe_key_packaged, 'iv': iv, 'data': data}
+        
+        ciphertext = {'abe_key': abe_key_packaged, 'iv': iv, 'data': data}
 
         plaintext = abe.decrypt(pk, sk, ciphertext)
 

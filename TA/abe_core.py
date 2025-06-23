@@ -14,6 +14,7 @@ import os
 import pickle
 import base64
 import hashlib
+import traceback
 from Crypto.Cipher import AES
 from Crypto import Random
 from Crypto.Util import Counter
@@ -85,7 +86,7 @@ class ABECore:
             sym_key = self.group.random(GT)
             
             # Mã hóa khóa đối xứng với CP-ABE
-            original_abe_key = self.abe.encrypt(pk, sym_key, policy)
+            original_abe_key = self.cpabe.encrypt(pk, sym_key, policy)
             if original_abe_key is None:
                 raise ValueError("ABE encryption failed. Check the policy syntax.")
 
@@ -126,7 +127,7 @@ class ABECore:
             original_abe_key = packaged_abe_key['ciphertext']
 
             # Giải mã khóa đối xứng bằng ABE, dùng policy vừa lấy được
-            sym_key = self.abe.decrypt(pk, sk, original_abe_key, policy)
+            sym_key = self.cpabe.decrypt(pk, sk, original_abe_key, policy)
             
             if sym_key:
                 print("[+] ABE Decryption SUCCESSFUL. Proceeding to symmetric decryption.")

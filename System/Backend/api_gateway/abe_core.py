@@ -37,7 +37,6 @@ class ABECore:
             curve (str): Loại đường cong ghép cặp được sử dụng (mặc định: 'SS512')
         '''
         self.group = PairingGroup(curve)
-        # Sửa lỗi: Thống nhất tên gọi thành self.abe
         self.abe = CPabe_BSW07(self.group)
         
     def setup(self):
@@ -47,7 +46,6 @@ class ABECore:
         Trả về:
             tuple: (pk, mk) - khóa công khai và khóa chủ
         '''
-        # Sửa lỗi: Gọi hàm trên self.abe
         return self.abe.setup()
     
     def keygen(self, pk, mk, user_attributes):
@@ -62,33 +60,19 @@ class ABECore:
         Trả về:
             sk: Khóa bí mật của người dùng
         '''
-        # Sửa lỗi: Gọi hàm trên self.abe
         return self.abe.keygen(pk, mk, user_attributes)
 
+    # === HÀM NÀY KHÔNG CÒN ĐƯỢC DÙNG NỮA THEO LOGIC MỚI, NHƯNG GIỮ LẠI ĐỂ THAM KHẢO ===
     def encrypt(self, pk, plaintext, policy):
-        '''
-        Mã hóa dữ liệu với chính sách truy cập
-        
-        Tham số:
-            pk: Khóa công khai
-            plaintext (bytes): Dữ liệu cần mã hóa
-            policy (str): Chuỗi biểu diễn chính sách truy cập (ví dụ: "Doctor AND Cardiologist")
-            
-        Trả về:
-            dict: Bản mã chứa dữ liệu đã được mã hóa và thông tin chính sách
-        '''
+        # ... (Hàm này không thay đổi, nhưng sẽ không được gọi trong ehr.py nữa)
         try:
             sym_key = self.group.random(GT)
-            
-            # Sửa lỗi: Gọi hàm trên self.abe
             abe_encrypted_key = self.abe.encrypt(pk, sym_key, policy)
             if abe_encrypted_key is None:
                 raise ValueError("ABE encryption failed. Check the policy syntax.")
-
-            iv, sym_encrypted_data = self._symmetric_encrypt(sym_key, plaintext)
-            
+            iv, sym_encrypted_data = self.symmetric_encrypt(sym_key, plaintext)
             return {
-                'abe_key': abe_encrypted_key,
+                'abe_key': abe_encrypted_key, 
                 'iv': iv,
                 'data': sym_encrypted_data
             }
@@ -97,35 +81,37 @@ class ABECore:
             traceback.print_exc()
             return None
     
-    def decrypt(self, pk, sk, ct, policy):
+    # === HÀM DECRYPT ĐÚNG CHO LOGIC GIẢI MÃ TẠI API GATEWAY ===
+    # LƯU Ý: HÀM DECRYPT CỦA THƯ VIỆN CHARM KHÔNG NHẬN THAM SỐ `policy`.
+    def decrypt(self, pk, sk, ct):
         '''
-        Giải mã dữ liệu nếu thuộc tính của người dùng thỏa mãn chính sách
-        
-        Tham số:
-            pk: Khóa công khai
-            sk: Khóa bí mật của người dùng
-            ct (dict): Bản mã từ hàm encrypt
-            policy (str): Chính sách truy cập được dùng để mã hóa (đã được làm sạch)
-            
-        Trả về:
-            bytes: Dữ liệu gốc nếu giải mã thành công, None nếu thất bại
+        Giải mã ABE để lấy lại khóa đối xứng.
+        Hàm này chỉ là một wrapper quanh hàm decrypt của thư viện.
         '''
         try:
-            # Sửa lỗi: Gọi hàm trên self.abe và truyền vào policy
-            sym_key = self.abe.decrypt(pk, sk, ct['abe_key'], policy)
-            
-            if sym_key:
-                print("[+] ABE Decryption SUCCESSFUL. Proceeding to symmetric decryption.")
-                return self._symmetric_decrypt(sym_key, ct['iv'], ct['data'])
-
-            print("[-] ABE Decryption FAILED. The secret key attributes do not satisfy the policy.")
-            return None
+            return self.abe.decrypt(pk, sk, ct)
         except Exception as e:
-            print(f"[!] EXCEPTION during decryption: {e}") 
+            print(f"[!] EXCEPTION during ABE decryption: {e}") 
             traceback.print_exc()
             return None
-        
-    def _symmetric_encrypt(self, key, data):
+
+    # === THÊM HÀM MỚI ĐỂ PHỤC VỤ LOGIC UPLOAD THEO SƠ ĐỒ ===
+    def symmetric_encrypt_for_upload(self, data):
+        '''
+        Tạo khóa session (dk) và dùng nó để mã hóa dữ liệu bằng AES.
+        Trả về một dict chứa khóa dk, iv và dữ liệu đã mã hóa.
+        '''
+        # Tạo khóa session key ngẫu nhiên
+        dk = self.group.random(GT)
+        iv, encrypted_data = self.symmetric_encrypt(dk, data)
+        return {
+            'dk': dk,
+            'iv': iv,
+            'data': encrypted_data
+        }
+
+    # === ĐỔI TÊN HÀM CHO NHẤT QUÁN VÀ ĐỂ PUBLIC ===
+    def symmetric_encrypt(self, key, data):
         '''
         Mã hóa dữ liệu với một khóa đối xứng (AES-CTR)
         '''
@@ -145,7 +131,8 @@ class ABECore:
         
         return iv, encrypted_data
     
-    def _symmetric_decrypt(self, key, iv, encrypted_data):
+    # === ĐỔI TÊN HÀM CHO NHẤT QUÁN VÀ ĐỂ PUBLIC ===
+    def symmetric_decrypt(self, key, iv, encrypted_data):
         '''
         Giải mã dữ liệu với khóa đối xứng (AES-CTR)
         '''
