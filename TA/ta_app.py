@@ -1,6 +1,6 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from abe_core import ABECore
-import os, base64, hashlib, pickle
+import os, base64, hashlib, pickle, struct, traceback
 from utils.secrets_helper import store_secret, retrieve_secret
 from charm.core.engine.util import objectToBytes, bytesToObject
 
@@ -90,6 +90,74 @@ def get_public_key():
         return jsonify({"error": "Public key not found. Please run /setup first"}), 404
     except Exception as e:
         return jsonify({"error": f"Failed to get public key: {str(e)}"}), 500
+
+@app.route('/encrypt', methods=['POST'])
+def encrypt():
+    try:
+        data = request.get_json()
+        data_b64 = data.get('data_b64')
+        policy = data.get('policy')
+        
+        if not data_b64 or not policy:
+            return jsonify({"msg": "data_b64 and policy are required"}), 400
+            
+        plaintext_bytes = base64.b64decode(data_b64)
+        pk = abe.load_public_key(filename='keys_public.key', directory='.')
+        
+        ciphertext = abe.encrypt(pk, plaintext_bytes, policy)
+        if ciphertext is None:
+            return jsonify({"msg": "Encryption failed"}), 500
+            
+        return jsonify({
+            "abe_key_b64": base64.b64encode(objectToBytes(ciphertext['abe_key'], abe.group)).decode('utf-8'),
+            "iv_b64": base64.b64encode(ciphertext['iv']).decode('utf-8'),
+            "data_b64": base64.b64encode(ciphertext['data']).decode('utf-8')
+        }), 200
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"msg": f"Encryption error: {str(e)}"}), 500
+
+@app.route('/decrypt', methods=['POST'])
+def decrypt():
+    try:
+        data = request.get_json()
+        pk_b64 = data.get('pk_b64')
+        sk_b64 = data.get('sk_b64')
+        ct_b64 = data.get('ct_b64')
+        
+        if not all([pk_b64, sk_b64, ct_b64]):
+            return jsonify({"msg": "pk_b64, sk_b64, and ct_b64 are required"}), 400
+            
+        pk = bytesToObject(base64.b64decode(pk_b64), abe.group)
+        sk = bytesToObject(base64.b64decode(sk_b64), abe.group)
+        encrypted_data_from_s3 = base64.b64decode(ct_b64)
+
+        abe_key_len = struct.unpack('!I', encrypted_data_from_s3[:4])[0]
+        abe_key_bytes = encrypted_data_from_s3[4:4+abe_key_len]
+        abe_key = bytesToObject(abe_key_bytes, abe.group)
+        offset = 4 + abe_key_len
+        iv_len = struct.unpack('!I', encrypted_data_from_s3[offset:offset+4])[0]
+        iv = encrypted_data_from_s3[offset+4:offset+4+iv_len]
+        offset = offset + 4 + iv_len
+        data_len = struct.unpack('!I', encrypted_data_from_s3[offset:offset+4])[0]
+        data = encrypted_data_from_s3[offset+4:offset+4+data_len]
+        
+        ciphertext = {'abe_key': abe_key, 'iv': iv, 'data': data}
+
+        plaintext = abe.decrypt(pk, sk, ciphertext)
+
+        if plaintext is None:
+            return jsonify({
+                "msg": "Decryption failed - Access denied",
+                "reason": "Your attributes don't satisfy the file's access policy"
+            }), 403
+
+        return Response(plaintext, mimetype='application/octet-stream'), 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"msg": f"Decryption error: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(

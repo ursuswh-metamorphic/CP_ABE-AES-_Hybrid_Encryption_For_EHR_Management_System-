@@ -296,11 +296,11 @@ def download(record_id):
             json={
                 "pk_b64": pk_b64,
                 "sk_b64": sk_b64,
-                "ct_b64": base64.b64encode(encrypted_data_from_s3).decode('utf-8'),
-                "policy": cleaned_policy_for_decrypt
+                "ct_b64": base64.b64encode(encrypted_data_from_s3).decode('utf-8')
+                # Không có dòng "policy": ... nữa
             },
             verify=False,
-            timeout=15 # Tăng timeout cho tác vụ nặng
+            timeout=15
         )
         
         # Kiểm tra xem TA có trả về lỗi không (ví dụ: giải mã thất bại 403)
