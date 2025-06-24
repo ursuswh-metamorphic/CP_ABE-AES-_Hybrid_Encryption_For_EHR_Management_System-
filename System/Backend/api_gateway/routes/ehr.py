@@ -1,24 +1,36 @@
-from flask import Blueprint, request, jsonify, send_file, current_app, Response
-from flask_jwt_extended import jwt_required, get_jwt_identity
-from extensions import db
-from models import EhrFile, User
-import requests
-import base64
-import hashlib
-import uuid
-import io
+# -*- coding: utf-8 -*-
+"""
+File: ehr.py (Nâng cấp với kiến trúc lưu trữ lai S3 + TA)
+---------------------------------------------------------
+- Tái cấu trúc (refactor) lại toàn bộ luồng lưu trữ theo yêu cầu:
+  1. Dữ liệu file đã mã hóa AES được lưu trên S3.
+  2. Các thành phần khóa (ABE key, IV, tag, metadata, signature)
+     được đóng gói và lưu trữ trên Trusted Authority (TA).
+"""
+
 import os
 import sys
-from datetime import datetime
+import base64
 import json
-import gc
-import boto3
 import traceback
-from botocore.exceptions import ClientError
-import re # Đảm bảo đã import
+import uuid
+from datetime import datetime
+import re
 
+import boto3
+import requests
+from botocore.exceptions import ClientError
+from flask import Blueprint, Response, current_app, jsonify, request
+from flask_jwt_extended import get_jwt_identity, jwt_required
+
+from extensions import db
+from models import EhrFile, User
+
+# === CẤU HÌNH ===
 S3_BUCKET = os.environ.get("S3_BUCKET")
 S3_REGION = os.environ.get("S3_REGION")
+
+# Khởi tạo S3 client
 s3_client = boto3.client(
     "s3",
     region_name=S3_REGION,
@@ -26,27 +38,21 @@ s3_client = boto3.client(
     aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
 )
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..'))
-from System.Backend.api_gateway.abe_core import ABECore
-from charm.core.engine.util import objectToBytes, bytesToObject
+# === IMPORT VÀ KHỞI TẠO ABE CORE ===
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..')) 
+from System.Backend.api_gateway.abe_core_v2 import ABECompatWrapper as ABECore
 
 ehr_bp = Blueprint('ehr', __name__, url_prefix='/api/ehr')
 abe = ABECore()
 
+# === LỚP HELPER: GIAO TIẾP VỚI TA & S3 ===
+
 class TAClient:
-    @staticmethod
-    def keygen(attributes):
-        res = requests.post(
-            f"{current_app.config['TA_BASE_URL']}/keygen",
-            json={"attributes": attributes},
-            verify=False
-        )
-        res.raise_for_status()
-        # Sửa lỗi tương thích: TA Service đã được sửa để trả về base64 chuẩn.
-        return res.json()['sk'].encode('utf-8')
+    """Lớp giao tiếp với Dịch vụ Trusted Authority (TA)."""
     
     @staticmethod
     def get_public_key():
+        """Lấy khóa công khai từ TA."""
         res = requests.get(
             f"{current_app.config['TA_BASE_URL']}/get_public_key",
             verify=False
@@ -55,92 +61,78 @@ class TAClient:
         return res.json()['public_key']
 
     @staticmethod
-    def store_ctdk(record_id, ctdk):
-        sig = hashlib.sha512(ctdk).digest()
+    def store_key_package(record_id: str, key_package: dict):
+        """
+        Gửi gói khóa (key package) đến TA để lưu trữ.
+        LƯU Ý: Yêu cầu endpoint /store_key_package phải được tạo bên phía ta_app.py.
+        """
+        # Convert bytes to base64 for JSON serialization
+        serializable_package = {}
+        for key, value in key_package.items():
+            if isinstance(value, bytes):
+                serializable_package[key] = base64.b64encode(value).decode('utf-8')
+            else:
+                serializable_package[key] = value
+        
         res = requests.post(
-            f"{current_app.config['TA_BASE_URL']}/store_ctdk",
+            f"{current_app.config['TA_BASE_URL']}/store_key_package",
             json={
                 "record_id": record_id,
-                "ctdk": base64.b64encode(ctdk).decode(),
-                "sig": base64.b64encode(sig).decode()
+                "key_package": json.dumps(serializable_package) # Gửi dưới dạng chuỗi JSON
             },
             verify=False
         )
         res.raise_for_status()
+        current_app.logger.info(f"Successfully stored key package for record_id '{record_id}' on TA.")
+
+    @staticmethod
+    def get_key_package(record_id: str) -> dict:
+        """
+        Lấy lại gói khóa từ TA.
+        LƯU Ý: Yêu cầu endpoint /get_key_package/<record_id> phải được tạo bên phía ta_app.py.
+        """
+        res = requests.get(
+            f"{current_app.config['TA_BASE_URL']}/get_key_package/{record_id}",
+            verify=False
+        )
+        res.raise_for_status()
+        key_package_str = res.json()['key_package']
+        serializable_package = json.loads(key_package_str)
+        
+        # Convert base64 back to bytes for known bytes fields
+        key_package = {}
+        bytes_fields = ['iv', 'tag', 'encrypted_key', 'signature', 'sig', 'ct_key', 'data']
+        
+        for key, value in serializable_package.items():
+            if key in bytes_fields and isinstance(value, str):
+                try:
+                    key_package[key] = base64.b64decode(value)
+                except:
+                    key_package[key] = value  # Keep original if decode fails
+            else:
+                key_package[key] = value
+        
+        return key_package
 
 def upload_to_s3(data: bytes, s3_key: str):
+    """Tải dữ liệu file đã mã hóa AES lên S3."""
     try:
-        current_app.logger.info(f"Uploading to S3: bucket='{S3_BUCKET}', key='{s3_key}'")
         s3_client.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=data)
         current_app.logger.info(f"S3 Upload successful for key: {s3_key}")
     except ClientError as e:
-        current_app.logger.error(f"S3 ClientError on upload for key {s3_key}: {e}")
         raise RuntimeError(f"S3 upload failed: {e.response['Error']['Message']}")
-    except Exception as e:
-        current_app.logger.error(f"Unknown S3 error on upload for key {s3_key}: {e}")
-        traceback.print_exc()
-        raise RuntimeError(f"An unexpected error occurred during S3 upload: {str(e)}")
 
 def download_from_s3(s3_key: str) -> bytes:
+    """Tải dữ liệu file đã mã hóa AES từ S3."""
     try:
-        current_app.logger.info(f"Downloading from S3: bucket='{S3_BUCKET}', key='{s3_key}'")
         obj = s3_client.get_object(Bucket=S3_BUCKET, Key=s3_key)
-        content = obj["Body"].read()
-        current_app.logger.info(f"S3 Download successful for key: {s3_key}")
-        return content
+        return obj["Body"].read()
     except ClientError as e:
         if e.response['Error']['Code'] == 'NoSuchKey':
             raise FileNotFoundError(f"File with key '{s3_key}' not found in S3.")
-        else:
-            raise RuntimeError(f"S3 download failed: {e.response['Error']['Message']}")
-    except Exception as e:
-        traceback.print_exc()
-        raise RuntimeError(f"An unexpected error occurred during S3 download: {str(e)}")
+        raise RuntimeError(f"S3 download failed: {e.response['Error']['Message']}")
 
-@ehr_bp.route('/keygen', methods=['POST'])
-@jwt_required()
-def keygen():
-    uid = get_jwt_identity()
-    user = User.query.get_or_404(uid)
-
-    if user.downloaded_sk:
-        return jsonify({"msg": "Bạn chỉ được tải Secret Key một lần. Vui lòng liên hệ quản trị viên để được cấp lại."}), 403
-
-    attributes = request.json.get('attributes', [])
-    if not attributes:
-        return jsonify({"msg": "Trường 'attributes' là bắt buộc"}), 400
-    
-    current_app.logger.info(f"User {uid} is generating key with attributes: {attributes}")
-
-    try:
-        sk_bytes_from_ta = TAClient.keygen(attributes)
-        secret_key_string_for_user = sk_bytes_from_ta.decode('utf-8')
-
-        response_data = {
-            "secret_key": secret_key_string_for_user,
-            "attributes": attributes,
-            "user_id": uid,
-            "timestamp": datetime.now().isoformat(),
-            "message": "SECRET KEY GENERATED - SAVE THIS SECURELY!",
-            "warning": "⚠️ Server sẽ KHÔNG lưu trữ key này. Nếu làm mất, bạn sẽ không thể phục hồi dữ liệu.",
-            "instructions": {"save_as": f"user_{uid}_sk.json"}
-        }
-        
-        user.downloaded_sk = True
-        db.session.commit()
-        
-        del sk_bytes_from_ta
-        gc.collect()
-        return jsonify(response_data), 200
-        
-    except requests.exceptions.RequestException as e:
-        current_app.logger.error(f"TA connection failed for user {uid}: {e}")
-        return jsonify({"msg": "Không thể kết nối đến máy chủ cấp phát khóa (TA)."}), 503
-    except Exception as e:
-        db.session.rollback()
-        tb = traceback.format_exc()
-        current_app.logger.error(f"Key generation failed for user {uid}: {tb}")
-        return jsonify({"msg": f"Quá trình tạo khóa thất bại: {str(e)}"}), 500
+# === ENDPOINTS ĐÃ ĐƯỢC CẬP NHẬT ===
 
 @ehr_bp.route('/upload', methods=['POST'])
 @jwt_required()
@@ -152,71 +144,63 @@ def upload():
     if not file or not policy_from_form:
         return jsonify({"msg": "file và policy là bắt buộc"}), 400
 
-    cleaned_policy = re.sub(r'\s+', ' ', policy_from_form).strip()
-    current_app.logger.info(f"User {uid} uploading with Original Policy: '{policy_from_form}', Cleaned Policy for ABE: '{cleaned_policy}'")
+    cleaned_policy = re.sub(r'\s+', ' ', policy_from_form).strip().lower()
+    current_app.logger.info(f"User {uid} uploading with Cleaned Policy for ABE: '{cleaned_policy}'")
 
     data = file.read()
     record_id = str(uuid.uuid4())
-    s3_key = f"{uid}/{record_id}.enc"
+    s3_key = f"{uid}/{record_id}.aes.enc" # Đuôi file chỉ chứa dữ liệu AES
 
     try:
-        pk_base64 = PublicKeyManager.get_public_key()
-        pk_bytes = base64.b64decode(pk_base64)
-        pk = bytesToObject(pk_bytes, abe.group)
+        pk_base64 = TAClient.get_public_key()
+        pk = abe.deserialize_key(pk_base64)
         
-        # === LOGIC MÃ HÓA ĐÚNG THEO SƠ ĐỒ ===
-        # 1. Mã hóa file bằng AES, tạo ra khóa dk, iv, và file đã mã hóa
-        ciphertext_aes = abe.symmetric_encrypt_for_upload(data)
-        dk = ciphertext_aes['dk'] # Khóa session key (đối tượng GT)
-        iv = ciphertext_aes['iv']
-        encrypted_file_data = ciphertext_aes['data']
-        
-        # 2. Mã hóa dk bằng ABE, tạo ra CTdk
-        ctdk_obj = abe.abe.encrypt(pk, dk, cleaned_policy)
-        if ctdk_obj is None:
-            raise ValueError("ABE encryption failed. Check policy syntax.")
-        
-        # 3. Serialize CTdk để gửi cho TA và đóng gói vào file
-        ctdk_bytes = objectToBytes(ctdk_obj, abe.group)
+        # 1. Mã hóa để tạo ra gói dữ liệu hoàn chỉnh
+        full_encrypted_package = abe.encrypt(pk, data, cleaned_policy, user_id=uid)
 
-        # 4. Gửi CTdk và signature cho TA để lưu trữ (Bước 4 trong sơ đồ)
-        TAClient.store_ctdk(record_id, ctdk_bytes)
-        
-        # 5. Đóng gói CTdk, IV, và dữ liệu file đã mã hóa AES để lưu lên S3
-        import struct
-        encrypted_s3_blob = struct.pack(
-            f'!I{len(ctdk_bytes)}sI{len(iv)}sI{len(encrypted_file_data)}s',
-            len(ctdk_bytes), ctdk_bytes,
-            len(iv), iv,
-            len(encrypted_file_data), encrypted_file_data
-        )
-        
-        # 6. Upload blob lên S3
-        upload_to_s3(encrypted_s3_blob, s3_key)
+        if full_encrypted_package is None:
+            raise ValueError("Quá trình mã hóa tổng thể thất bại.")
 
+        # 2. Tách gói dữ liệu
+        encrypted_ehr_data = full_encrypted_package.pop('data')
+        # Phần còn lại là key_package
+        key_package = full_encrypted_package 
+
+        # 3. Gửi key_package cho TA để lưu trữ
+        TAClient.store_key_package(record_id, key_package)
+
+        # 4. Tải dữ liệu EHR đã mã hóa AES lên S3
+        upload_to_s3(encrypted_ehr_data, s3_key)
+
+        # 5. Lưu thông tin vào database (thêm lại s3_key)
         ef = EhrFile(
             record_id=record_id,
             filename=file.filename,
-            s3_key=s3_key,
+            s3_key=s3_key, # Lưu lại key của S3
             policy=policy_from_form,
             owner_id=uid
         )
         db.session.add(ef)
         db.session.commit()
         
-        return jsonify({"record_id": record_id, "message": "File uploaded and encrypted successfully"}), 201
+        return jsonify({"record_id": record_id, "message": "File uploaded and stored successfully"}), 201
 
+    except requests.exceptions.RequestException as e:
+        db.session.rollback()
+        current_app.logger.error(f"TA connection failed during upload for user {uid}: {e}")
+        return jsonify({"msg": "Không thể kết nối đến máy chủ lưu trữ khóa (TA)."}), 503
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Upload process failed for user {uid}: {e}")
         traceback.print_exc()
         return jsonify({"msg": "Upload process failed", "error": str(e)}), 500
 
+
 @ehr_bp.route('/download/<record_id>', methods=['POST'])
 @jwt_required()
 def download(record_id):
     uid = get_jwt_identity()
-    current_app.logger.info(f"User {uid} attempting local decryption for record {record_id}")
+    current_app.logger.info(f"User {uid} attempting decryption for record {record_id}")
 
     try:
         ef = EhrFile.query.filter_by(record_id=record_id).first_or_404()
@@ -224,76 +208,44 @@ def download(record_id):
         if not sk_b64:
             return jsonify({"msg": "Secret key is required"}), 400
 
-        encrypted_s3_blob = download_from_s3(ef.s3_key)
+        # 1. Lấy gói khóa (key package) từ TA
+        key_package = TAClient.get_key_package(record_id)
         
-        # === SỬA LỖI LOGIC MỞ GÓI TẠI ĐÂY ===
-        import struct
-        offset = 0
+        # 2. Tải dữ liệu EHR đã mã hóa AES từ S3
+        encrypted_ehr_data = download_from_s3(ef.s3_key)
 
-        # Mở gói ctdk_bytes
-        ctdk_len = struct.unpack('!I', encrypted_s3_blob[offset:offset+4])[0]
-        offset += 4
-        ctdk_bytes = encrypted_s3_blob[offset:offset+ctdk_len]
-        offset += ctdk_len
+        # 3. Tái tạo lại gói dữ liệu hoàn chỉnh để giải mã
+        full_package_for_decryption = key_package
+        full_package_for_decryption['data'] = encrypted_ehr_data
         
-        # Mở gói iv
-        iv_len = struct.unpack('!I', encrypted_s3_blob[offset:offset+4])[0]
-        offset += 4
-        iv = encrypted_s3_blob[offset:offset+iv_len]
-        offset += iv_len
+        pk_base64 = TAClient.get_public_key()
+        pk = abe.deserialize_key(pk_base64)
+        sk = abe.deserialize_key(sk_b64)
         
-        # MỞ GÓI encrypted_file_data một cách chính xác
-        encrypted_file_data_len = struct.unpack('!I', encrypted_s3_blob[offset:offset+4])[0]
-        offset += 4
-        encrypted_file_data = encrypted_s3_blob[offset:offset+encrypted_file_data_len]
-        # =======================================
+        # 4. Giải mã gói dữ liệu
+        plaintext = abe.decrypt(pk, sk, full_package_for_decryption)
 
-        # Phần còn lại của hàm không cần thay đổi
-        
-        pk_base64 = PublicKeyManager.get_public_key()
-        pk_bytes = base64.b64decode(pk_base64)
-        pk = bytesToObject(pk_bytes, abe.group)
-        
-        sk_bytes = base64.b64decode(sk_b64)
-        sk = bytesToObject(sk_bytes, abe.group)
-
-        ctdk_obj = bytesToObject(ctdk_bytes, abe.group)
-
-        current_app.logger.info("================== ABE DECRYPTION DEBUG (LOCAL) ==================")
-        current_app.logger.info(f"[*] Attempting to decrypt using policy from DB: {ef.policy}")
-        current_app.logger.info("================================================================")
-        
-        dk = abe.abe.decrypt(pk, sk, ctdk_obj)
-
-        if dk is None:
-            current_app.logger.warning(f"ABE decryption failed for user {uid} on record {record_id}.")
+        if plaintext is None:
             return jsonify({
                 "msg": "Decryption failed - Access Denied", 
                 "reason": "Your attributes do not satisfy the file's access policy.", 
                 "policy_required": ef.policy
             }), 403
         
-        current_app.logger.info(f"ABE decryption successful for user {uid} on record {record_id}.")
-        
-        plaintext = abe.symmetric_decrypt(dk, iv, encrypted_file_data)
-        
         resp = Response(plaintext, mimetype='application/octet-stream')
         resp.headers["Content-Disposition"] = f'attachment; filename="{ef.filename}"'
         resp.headers["Access-Control-Expose-Headers"] = "Content-Disposition"
-        resp.headers["Content-Encoding"] = "identity"
-        resp.direct_passthrough = False
-        current_app.logger.info(f"Successfully decrypted and sending file '{ef.filename}' to user {uid}.")
         return resp
 
     except FileNotFoundError as e:
-        return jsonify({"msg": "File not found on the server.", "error": str(e)}), 404
-    except (base64.binascii.Error, TypeError, ValueError) as e:
-        current_app.logger.error(f"Invalid Secret Key format for user {uid} for record {record_id}. Error: {e}")
-        return jsonify({"msg": "Invalid Secret Key format. Please ensure you are using the correct, unmodified key file."}), 400
+        return jsonify({"msg": "File or key material not found.", "error": str(e)}), 404
+    except requests.exceptions.RequestException as e:
+        return jsonify({"msg": "Could not connect to the Key Authority service (TA)."}), 503
     except Exception as e:
         tb = traceback.format_exc()
         current_app.logger.error(f"Download process failed for record {record_id} for user {uid}. Traceback: {tb}")
         return jsonify({"msg": "Download process failed", "error": str(e)}), 500
+
 
 @ehr_bp.route('/files', methods=['GET'])
 @jwt_required()

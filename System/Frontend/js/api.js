@@ -25,7 +25,7 @@ async function login(email, password) {
 }
 
 async function keygen(attrs) {
-  const res = await request('/api/ehr/keygen', { 
+  const res = await request('/api/keygen/', { 
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ attributes: attrs })
@@ -49,9 +49,15 @@ async function downloadEhr(rid, skFile) {
   let secretKeyBase64;
   try {
     const keyData = JSON.parse(skContent);
-    secretKeyBase64 = keyData.secret_key;
+    // Thử các field có thể có trong JSON
+    secretKeyBase64 = keyData.sk || keyData.secret_key || keyData.secret_key_base64;
   } catch (e) {
+    // Nếu không phải JSON, coi như là raw base64 string
     secretKeyBase64 = skContent.trim();
+  }
+
+  if (!secretKeyBase64) {
+    throw new Error("Không tìm thấy secret key trong file được cung cấp");
   }
 
   const res = await fetch(API_BASE + `/api/ehr/download/${rid}`, {
