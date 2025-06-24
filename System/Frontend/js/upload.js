@@ -20,7 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (profile.role === 'Patient' && profile.patient_id) {
         // Xử lý riêng cho bệnh nhân (nếu có)
         // Chuẩn hóa: "patient_id:12345" -> "PATIENTID_12345"
-        const patientAttr = `PATIENTID_${profile.patient_id}`;
+        const patientAttr = `PATIENTID${profile.patient_id}`;
         policyInput.value = patientAttr;
         
     } else {

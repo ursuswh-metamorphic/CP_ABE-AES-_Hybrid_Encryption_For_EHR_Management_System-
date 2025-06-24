@@ -62,9 +62,7 @@ class ABECore:
         '''
         return self.abe.keygen(pk, mk, user_attributes)
 
-    # === HÀM NÀY KHÔNG CÒN ĐƯỢC DÙNG NỮA THEO LOGIC MỚI, NHƯNG GIỮ LẠI ĐỂ THAM KHẢO ===
     def encrypt(self, pk, plaintext, policy):
-        # ... (Hàm này không thay đổi, nhưng sẽ không được gọi trong ehr.py nữa)
         try:
             sym_key = self.group.random(GT)
             abe_encrypted_key = self.abe.encrypt(pk, sym_key, policy)
@@ -81,8 +79,6 @@ class ABECore:
             traceback.print_exc()
             return None
     
-    # === HÀM DECRYPT ĐÚNG CHO LOGIC GIẢI MÃ TẠI API GATEWAY ===
-    # LƯU Ý: HÀM DECRYPT CỦA THƯ VIỆN CHARM KHÔNG NHẬN THAM SỐ `policy`.
     def decrypt(self, pk, sk, ct):
         '''
         Giải mã ABE để lấy lại khóa đối xứng.
@@ -95,7 +91,6 @@ class ABECore:
             traceback.print_exc()
             return None
 
-    # === THÊM HÀM MỚI ĐỂ PHỤC VỤ LOGIC UPLOAD THEO SƠ ĐỒ ===
     def symmetric_encrypt_for_upload(self, data):
         '''
         Tạo khóa session (dk) và dùng nó để mã hóa dữ liệu bằng AES.
@@ -110,7 +105,6 @@ class ABECore:
             'data': encrypted_data
         }
 
-    # === ĐỔI TÊN HÀM CHO NHẤT QUÁN VÀ ĐỂ PUBLIC ===
     def symmetric_encrypt(self, key, data):
         '''
         Mã hóa dữ liệu với một khóa đối xứng (AES-CTR)
@@ -131,7 +125,6 @@ class ABECore:
         
         return iv, encrypted_data
     
-    # === ĐỔI TÊN HÀM CHO NHẤT QUÁN VÀ ĐỂ PUBLIC ===
     def symmetric_decrypt(self, key, iv, encrypted_data):
         '''
         Giải mã dữ liệu với khóa đối xứng (AES-CTR)

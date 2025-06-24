@@ -99,7 +99,7 @@ class ABECore:
             iv, sym_encrypted_data = self._symmetric_encrypt(sym_key, plaintext)
             
             return {
-                'abe_key': packaged_abe_key, # Trả về gói mới
+                'abe_key': packaged_abe_key, 
                 'iv': iv,
                 'data': sym_encrypted_data
             }
