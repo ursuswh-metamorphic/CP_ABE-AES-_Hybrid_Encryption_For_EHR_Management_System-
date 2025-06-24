@@ -1,59 +1,3 @@
-<!-- <!DOCTYPE html>
-<html lang="vi">
-<head>
-  <meta charset="UTF-8">
-  <title>Sinh khóa bí mật</title>
-  <script>
-    (function(){
-      const token = localStorage.getItem('token');
-      if (!token) {
-        alert('Bạn phải đăng nhập để truy cập trang này.');
-        return window.location.href = 'login.html';
-      }
-      try {
-        const payload = JSON.parse(atob(token.split('.')[1]));
-        if (Date.now() >= payload.exp * 1000) {
-          localStorage.clear();
-          return window.location.href = 'login.html';
-        }
-      } catch {
-        localStorage.clear();
-        return window.location.href = 'login.html';
-      }
-    })();
-  </script>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body>
-  <!-- navbar --
-  <nav class="navbar navbar-light bg-light mb-4">
-    <div class="container">
-      <a class="navbar-brand" href="upload.html">🏥 EHR</a>
-      <a class="btn btn-outline-secondary" href="upload.html">Upload</a>
-      <a class="btn btn-outline-secondary" href="download.html">Download</a>
-    </div>
-  </nav>
-
-  <div class="container">
-    <div class="card shadow mb-4">
-      <div class="card-body">
-        <h4>Sinh khóa bí mật</h4>
-        <div id="alert" class="alert alert-info d-none"></div>
-        <div class="mb-3">
-          <label class="form-label">Attributes (dấu phẩy ngăn cách)</label>
-          <input id="attrs" class="form-control" value="role:Doctor,department:Cardiology">
-        </div>
-        <button id="genBtn" class="btn btn-primary">Tạo & Tải về SK</button>
-      </div>
-    </div>
-  </div>
-
-  <script src="./js/api.js"></script>
-  <script src="./js/keygen.js"></script>
-</body>
-</html> -->
-
-
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -62,7 +6,7 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
 <body>
-  <!-- Auth Guard & Navbar -->
+  <!-- Auth Guard & Navbar (Giữ nguyên) -->
   <script>
     (function(){
       const token = localStorage.getItem('token');
@@ -89,23 +33,29 @@
     </div>
   </nav>
 
-  <!-- Nội dung chính -->
+  <!-- Nội dung chính (Đã được chỉnh sửa) -->
   <div class="container">
     <div class="card shadow">
       <div class="card-body">
         <h4>Sinh khóa bí mật</h4>
+        <p class="text-muted">
+          Hệ thống sẽ tự động sử dụng các thuộc tính (Role, Department) từ tài khoản của bạn để tạo khóa. Vui lòng kiểm tra lại thông tin bên dưới.
+        </p>
         <div id="alert" class="alert alert-info d-none"></div>
         <form id="keygenForm">
           <div class="mb-3">
-            <label class="form-label">Attributes (dấu phẩy ngăn cách)</label>
-            <input id="attrs" class="form-control" value="role:Doctor,department:Cardiology">
+            <!-- THAY ĐỔI 1: Sửa lại label -->
+            <label class="form-label">Thuộc tính của bạn (lấy từ tài khoản):</label>
+            <!-- THAY ĐỔI 2: Thêm thuộc tính 'readonly' để người dùng không thể sửa -->
+            <input id="attrs" class="form-control" readonly>
           </div>
+          <!-- THAY ĐỔI 3: Thêm id cho nút để có thể vô hiệu hóa nếu cần -->
           <button type="button" id="genBtn" class="btn btn-primary">Tạo & Tải về SK</button>
         </form>
       </div>
     </div>
 
-    <!-- Thanh điều hướng chức năng -->
+    <!-- Thanh điều hướng chức năng (Giữ nguyên) -->
     <div class="mt-4 text-center">
       <a href="upload.html" class="btn btn-outline-warning mx-2">Upload</a>
       <a href="download.html" class="btn btn-outline-danger mx-2">Download</a>
@@ -119,7 +69,43 @@
       window.location.href = 'login.html';
     });
   </script>
+  
+  <!-- THAY ĐỔI 4: Thêm một đoạn script nhỏ để tự động điền thuộc tính khi tải trang -->
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // Lấy thông tin user từ localStorage
+        const profile = JSON.parse(localStorage.getItem('profile') || '{}');
+        const attrsInput = document.getElementById('attrs');
+        const genBtn = document.getElementById('genBtn');
+
+        const attributesForDisplay = [];
+        if (profile.role) {
+            // Hiển thị định dạng quen thuộc cho người dùng
+            attributesForDisplay.push(`role:${profile.role}`);
+        }
+        if (profile.department) {
+            attributesForDisplay.push(`department:${profile.department}`);
+        }
+
+        if (attributesForDisplay.length > 0) {
+            // Gán giá trị vào ô input
+            attrsInput.value = attributesForDisplay.join(',');
+        } else {
+            // Xử lý trường hợp không tìm thấy thuộc tính
+            attrsInput.value = "Tài khoản không có thuộc tính Role/Department.";
+            // Vô hiệu hóa nút tạo key
+            genBtn.disabled = true;
+            // Hiển thị cảnh báo
+            const alertBox = document.getElementById('alert');
+            alertBox.textContent = "Không thể tạo khóa vì tài khoản của bạn thiếu thông tin Role hoặc Department.";
+            alertBox.className = 'alert alert-danger';
+            alertBox.classList.remove('d-none');
+        }
+    });
+  </script>
+
   <script src="./js/api.js"></script>
+  <!-- File keygen.js vẫn cần được sửa như hướng dẫn ở câu trả lời trước -->
   <script src="./js/keygen.js"></script>
 </body>
 </html>
