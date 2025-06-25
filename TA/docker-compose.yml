@@ -1,14 +1,41 @@
+# services:
+#   ta:
+#     build: .
+#     container_name: ta-service
+#     ports:
+#       - "5001:5001"
+#     volumes:
+#       - ./certs:/app/certs
+#       - ./secrets:/app/secrets
+#     environment:
+#       - FLASK_ENV=production
+#       - AWS_SECRET_NAME=cpabe-master-key
+#       - AWS_REGION=us-east-1
+#     restart: unless-stopped
+
+
+# update version 25/6
+
+# docker-compose.yml
+# docker-compose.yml
+# version: '3.8' # Có thể xóa
+
 services:
   ta:
     build: .
-    container_name: ta-service
+    image: ta-service-local-test
+    container_name: ta-service-local
     ports:
       - "5001:5001"
     volumes:
       - ./certs:/app/certs
-      - ./secrets:/app/secrets
+      - ./secrets:/app/secrets # Đảm bảo thư mục này được dùng đúng mục đích
+    env_file: # <-- THÊM KHỐI NÀY
+      - ./.env  # <-- Chỉ định rõ ràng file .env cần load
+      # - ~/.aws:/root/.aws:ro   # <-- XÓA HOẶC COMMENT DÒNG NÀY
+    # Docker Compose sẽ tự động tìm file .env cùng cấp và load các biến từ đó.
+    # Các biến trong .env sẽ tự động được thiết lập cho container.
+    # Bạn không cần phải liệt kê lại chúng trong 'environment' ở đây.
     environment:
-      - FLASK_ENV=production
-      - AWS_SECRET_NAME=cpabe-master-key
-      - AWS_REGION=us-east-1
+      - PYTHONUNBUFFERED=1 
     restart: unless-stopped

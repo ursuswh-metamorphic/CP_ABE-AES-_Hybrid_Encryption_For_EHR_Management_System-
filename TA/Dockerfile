@@ -29,6 +29,9 @@ RUN apt-get update && \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
+
+
+
 WORKDIR /build
 
 # --- 1. Biên dịch và cài đặt PBC Library ---
@@ -106,6 +109,8 @@ WORKDIR /app
 # ---- BƯỚC CÀI ĐẶT QUAN TRỌNG ----
 # Sao chép mã nguồn liboqs-python và cài đặt nó bằng "pip install ."
 COPY --from=builder /build/liboqs-python /app/liboqs-python
+
+
 RUN python3.10 -m pip install --no-cache-dir ./liboqs-python
 
 # Bây giờ mới cài đặt các gói còn lại từ requirements.txt
