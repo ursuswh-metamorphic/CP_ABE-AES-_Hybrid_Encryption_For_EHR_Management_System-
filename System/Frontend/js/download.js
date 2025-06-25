@@ -28,13 +28,19 @@ document.getElementById('downloadForm').addEventListener('submit', async e => {
     alert.classList.remove('d-none');
     
   } catch(err) {
-    let errorMessage = err.msg || 'Lỗi download';
-    if (err.reason) {
-        errorMessage += ` - Lý do: ${err.reason}`;
+    // Log lỗi đầy đủ ra console để dev xem, nhưng không hiển thị cho user
+    console.error("Download Error:", err); 
+
+    let errorMessage;
+    // Kiểm tra mã lỗi từ server
+    if (err.msg && err.msg.includes("Decryption failed")) {
+        // Nếu giải mã thất bại, chỉ thông báo chung chung
+        errorMessage = "Giải mã thất bại. Khóa bí mật được cung cấp không hợp lệ hoặc không đủ quyền để truy cập file này.";
+    } else {
+        // Với các lỗi khác (kết nối, file không tồn tại), hiển thị thông báo của server
+        errorMessage = err.msg || 'Đã xảy ra lỗi trong quá trình download.';
     }
-    if (err.policy_required) {
-        errorMessage += ` (Policy yêu cầu: ${err.policy_required})`;
-    }
+    
     alert.textContent = errorMessage;
     alert.className = 'alert alert-danger';
     alert.classList.remove('d-none');
